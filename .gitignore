@@ -1,0 +1,14 @@
+/bin/
+/geoctl
+/dist/
+/data/
+*.db
+*.db-journal
+*.test
+*.out
+.env
+.env.*
+.idea/
+.vscode/
+coverage.txt
+config.yaml
