@@ -1,0 +1,86 @@
+// Package gitrsync reconciles git repository data between primary and
+// secondary filesystems using rsync over SSH. It copies the entire
+// /var/opt/gitlab/git-data/repositories tree, preserving the hashed
+// storage layout.
+package gitrsync
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/anomalyco/gitlab-geo-sync/internal/config"
+	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
+	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
+)
+
+const name = "git_rsync"
+
+// Reconciler rsyncs the primary git-data tree to the secondary.
+type Reconciler struct {
+	sshHost    string // primary host:port
+	srcPath    string // primary repos path
+	dstPath    string // secondary repos path
+	dryRun     bool
+}
+
+// New creates a git rsync reconciler from a primary/secondary config pair.
+func New(primary, secondary *config.SiteConfig, dryRun bool) *Reconciler {
+	return &Reconciler{
+		sshHost: primary.SSHHost,
+		srcPath: primary.Git.ReposPath,
+		dstPath: secondary.Git.ReposPath,
+		dryRun:  dryRun,
+	}
+}
+
+func (r *Reconciler) Name() string { return name }
+
+// Reconcile runs rsync over SSH from primary to secondary, with
+// --delete --checksum to ensure the destination is an exact mirror.
+// The remote side uses "sudo rsync" to read git-owned files.
+// The local side also uses sudo (via rsync-path on the receiver) to
+// write into git-owned directories.
+func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
+	start := time.Now()
+	args := []string{
+		"-az", "--delete", "--checksum",
+		"-e", "ssh -o StrictHostKeyChecking=accept-new",
+		"--rsync-path", "sudo rsync",
+	}
+	if r.dryRun {
+		args = append(args, "--dry-run")
+	}
+	args = append(args,
+		fmt.Sprintf("%s:%s/", r.sshHost, r.srcPath),
+		r.dstPath+"/",
+	)
+
+	cmd := exec.CommandContext(ctx, "rsync", args...)
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	metrics.SyncDurationSeconds.WithLabelValues(name, errResult(err)).Observe(elapsed.Seconds())
+	if err != nil {
+		metrics.DriftTotal.WithLabelValues(name, "critical").Inc()
+		return reconciler.Result{
+			OK:        false,
+			Detail:    fmt.Sprintf("rsync failed: %s: %s", err, strings.TrimSpace(string(out))),
+			Remaining: 1,
+		}
+	}
+	metrics.LastSyncTimestamp.WithLabelValues(name).Set(float64(time.Now().Unix()))
+	detail := fmt.Sprintf("rsync ok in %s", elapsed)
+	if r.dryRun {
+		detail += " (dry-run)"
+	}
+	return reconciler.Result{OK: true, Detail: detail}
+}
+
+func errResult(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
+}
