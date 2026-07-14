@@ -1,0 +1,55 @@
+services:
+  postgres-primary:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gitlab
+      POSTGRES_PASSWORD: ${PG_CTRL_PASSWORD:-gitlab}
+      POSTGRES_DB: gitlabhq_production
+    ports: ["5432:5432"]
+    command: ["postgres", "-c", "wal_level=replica", "-c", "max_wal_senders=10", "-c", "hot_standby=on"]
+    volumes:
+      - pg-primary:/var/lib/postgresql/data
+      - ./postgres-primary-init:/docker-entrypoint-initdb.d:ro
+
+  postgres-secondary:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: replicator
+    depends_on: [postgres-primary]
+    ports: ["5433:5432"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until pg_basebackup -h postgres-primary -D /var/lib/postgresql/data -U replicator -v -P -X stream -c fast -R; do
+          echo "waiting for primary..."; sleep 2;
+        done
+        exec postgres -c hot_standby=on
+    volumes:
+      - pg-secondary:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_AK:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SK:-minioadmin}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+
+  geoctl:
+    build: .
+    depends_on: [postgres-primary, postgres-secondary, minio]
+    environment:
+      PG_CTRL_PASSWORD: ${PG_CTRL_PASSWORD:-gitlab}
+      PG_REPL_PASSWORD: ${PG_REPL_PASSWORD:-replpass}
+      SEC_REPL_PASSWORD: ${SEC_REPL_PASSWORD:-replpass}
+      S3_AK: ${S3_AK:-minioadmin}
+      S3_SK: ${S3_SK:-minioadmin}
+    volumes:
+      - ../deploy/config.example.yaml:/etc/geoctl/config.yaml:ro
+    command: ["serve", "-c", "/etc/geoctl/config.yaml"]
+
+volumes:
+  pg-primary:
+  pg-secondary:
+  minio-data:
