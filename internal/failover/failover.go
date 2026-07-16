@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"sync/atomic"
 	"time"
 
@@ -15,11 +14,13 @@ import (
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
 	"github.com/anomalyco/gitlab-geo-sync/internal/dbkey"
 	"github.com/anomalyco/gitlab-geo-sync/internal/readonly"
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 // Controller monitors primary health and orchestrates failover.
 type Controller struct {
 	cfg           *config.Config
+	sshCfg        sshexec.Config
 	primaryURL    string
 	healthURLs    []string
 	quorum        int
@@ -37,6 +38,7 @@ type Controller struct {
 func New(cfg *config.Config, dryRun bool) *Controller {
 	fc := &Controller{
 		cfg:           cfg,
+		sshCfg:        cfg.SSHExecConfig(),
 		primaryURL:    cfg.Primary.ExternalURL,
 		healthURLs:    []string{cfg.Primary.ExternalURL},
 		checkInterval: 10 * time.Second,
@@ -157,13 +159,13 @@ func (c *Controller) Promote(ctx context.Context, secondaryName string) error {
 					"-D /var/opt/gitlab/postgresql/data")
 		}},
 		{"disable read-only mode", func(ctx context.Context) error {
-			return readonly.Disable(ctx, secondary.SSHHost, c.dryRun)
+			return readonly.DisableWithConfig(ctx, secondary.SSHHost, c.dryRun, c.sshCfg)
 		}},
 		{"start gitlab services on secondary", func(ctx context.Context) error {
 			return c.sshSecondary(ctx, secondary.SSHHost, "sudo gitlab-ctl start")
 		}},
 		{"verify db_key_base parity", func(ctx context.Context) error {
-			return dbkey.Check(ctx, c.cfg.Primary.SSHHost, secondary.SSHHost)
+			return dbkey.CheckWithConfig(ctx, c.cfg.Primary.SSHHost, secondary.SSHHost, c.sshCfg)
 		}},
 	}
 
@@ -213,7 +215,7 @@ func (c *Controller) AdoptAsSecondary(ctx context.Context, oldPrimarySSH string)
 					newPrimary.Postgres.Host, newPrimary.Postgres.ReplicationUser))
 		}},
 		{"enable read-only mode on old primary", func(ctx context.Context) error {
-			return readonly.Enable(ctx, oldPrimarySSH, c.dryRun)
+			return readonly.EnableWithConfig(ctx, oldPrimarySSH, c.dryRun, c.sshCfg)
 		}},
 		{"start gitlab on old primary as secondary", func(ctx context.Context) error {
 			return c.sshSecondary(ctx, oldPrimarySSH, "sudo gitlab-ctl start")
@@ -248,14 +250,10 @@ func (c *Controller) verifyPrimaryDown(ctx context.Context) error {
 }
 
 func (c *Controller) sshSecondary(ctx context.Context, sshHost, command string) error {
-	if sshHost == "" {
-		return fmt.Errorf("ssh_host not configured")
+	if err := sshexec.CheckHost(sshHost); err != nil {
+		return err
 	}
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-o", "StrictHostKeyChecking=accept-new",
-		sshHost, command,
-	)
-	out, err := cmd.CombinedOutput()
+	out, err := c.sshCfg.CombinedOutput(ctx, sshHost, command)
 	if err != nil {
 		return fmt.Errorf("ssh %s: %w: %s", sshHost, err, string(out))
 	}

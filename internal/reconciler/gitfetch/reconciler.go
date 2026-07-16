@@ -22,6 +22,7 @@ import (
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 const name = "git_fetch"
@@ -32,17 +33,19 @@ type Reconciler struct {
 	reposPath      string
 	secondaryName  string
 	primaryPool    *pgxpool.Pool
+	sshCfg         sshexec.Config
 	dryRun         bool
 	maxParallel    int
 }
 
 // New creates a git fetch reconciler.
-func New(primarySSHHost, reposPath, secondaryName string, primaryPool *pgxpool.Pool, dryRun bool) *Reconciler {
+func New(primarySSHHost, reposPath, secondaryName string, primaryPool *pgxpool.Pool, dryRun bool, sshCfg sshexec.Config) *Reconciler {
 	return &Reconciler{
 		primarySSHHost: primarySSHHost,
 		reposPath:      reposPath,
 		secondaryName:  secondaryName,
 		primaryPool:    primaryPool,
+		sshCfg:         sshCfg,
 		dryRun:         dryRun,
 		maxParallel:    8,
 	}
@@ -208,6 +211,7 @@ func (r *Reconciler) fetchOne(ctx context.Context, p projectRow) bool {
 	projectTimeout, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(projectTimeout, "git", args...)
+	cmd.Env = append(cmd.Environ(), "GIT_SSH_COMMAND="+r.sshCfg.SSHString())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Warn().Err(err).Int32("project_id", p.ID).

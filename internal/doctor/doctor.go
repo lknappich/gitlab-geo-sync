@@ -16,6 +16,7 @@ import (
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
 	"github.com/anomalyco/gitlab-geo-sync/internal/dbkey"
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 // Check represents a single prerequisite check.
@@ -37,11 +38,8 @@ type Result struct {
 // Run executes all doctor checks against the config and returns a result.
 func Run(ctx context.Context, cfg *config.Config) *Result {
 	r := &Result{}
-
-	// SSH connectivity.
-	r.checks(ctx, cfg)
-
-	// Summarize.
+	sshCfg := cfg.SSHExecConfig()
+	r.checks(ctx, cfg, sshCfg)
 	for _, c := range r.Checks {
 		switch c.Status {
 		case "PASS":
@@ -57,9 +55,9 @@ func Run(ctx context.Context, cfg *config.Config) *Result {
 
 func (r *Result) add(c Check) { r.Checks = append(r.Checks, c) }
 
-func (r *Result) checks(ctx context.Context, cfg *config.Config) {
+func (r *Result) checks(ctx context.Context, cfg *config.Config, sshCfg sshexec.Config) {
 	// --- SSH connectivity ---
-	r.add(sshCheck(ctx, "primary", cfg.Primary.SSHHost))
+	r.add(sshCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
 
 	// --- PostgreSQL: primary control connection ---
 	r.add(pgControlCheck(ctx, "primary", cfg.Primary.Postgres))
@@ -74,20 +72,20 @@ func (r *Result) checks(ctx context.Context, cfg *config.Config) {
 	r.add(pgWalSendersCheck(ctx, "primary", cfg.Primary.Postgres))
 
 	// --- db_key_base present on primary ---
-	r.add(dbKeyPresentCheck(ctx, "primary", cfg.Primary.SSHHost))
+	r.add(dbKeyPresentCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
 
 	// --- rsync available on primary ---
-	r.add(rsyncCheck(ctx, "primary", cfg.Primary.SSHHost))
+	r.add(rsyncCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
 
 	// --- git available on primary ---
-	r.add(gitCheck(ctx, "primary", cfg.Primary.SSHHost))
+	r.add(gitCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
 
 	// --- Per-secondary checks ---
 	for _, sc := range cfg.Secondaries {
 		label := "secondary:" + sc.Name
 
 		// SSH.
-		r.add(sshCheck(ctx, label, sc.SSHHost))
+		r.add(sshCheck(ctx, label, sc.SSHHost, sshCfg))
 
 		// PG control connection.
 		r.add(pgControlCheck(ctx, label, sc.Postgres))
@@ -96,22 +94,22 @@ func (r *Result) checks(ctx context.Context, cfg *config.Config) {
 		r.add(pgInRecoveryCheck(ctx, label, sc.Postgres))
 
 		// db_key_base present.
-		r.add(dbKeyPresentCheck(ctx, label, sc.SSHHost))
+		r.add(dbKeyPresentCheck(ctx, label, sc.SSHHost, sshCfg))
 
 		// db_key_base matches primary.
 		if cfg.Primary.SSHHost != "" && sc.SSHHost != "" {
-			r.add(dbKeyParityCheck(ctx, cfg.Primary.SSHHost, sc.SSHHost, sc.Name))
+			r.add(dbKeyParityCheck(ctx, cfg.Primary.SSHHost, sc.SSHHost, sc.Name, sshCfg))
 		}
 
 		// rsync available.
-		r.add(rsyncCheck(ctx, label, sc.SSHHost))
+		r.add(rsyncCheck(ctx, label, sc.SSHHost, sshCfg))
 
 		// git available.
-		r.add(gitCheck(ctx, label, sc.SSHHost))
+		r.add(gitCheck(ctx, label, sc.SSHHost, sshCfg))
 
 		// Repos path exists on secondary.
 		if sc.Git.ReposPath != "" {
-			r.add(pathExistsCheck(ctx, label, sc.SSHHost, sc.Git.ReposPath, "repos_path"))
+			r.add(pathExistsCheck(ctx, label, sc.SSHHost, sc.Git.ReposPath, "repos_path", sshCfg))
 		}
 	}
 
@@ -123,17 +121,15 @@ func (r *Result) checks(ctx context.Context, cfg *config.Config) {
 
 // --- individual checks ---
 
-func sshCheck(ctx context.Context, label, sshHost string) Check {
+func sshCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
 	if sshHost == "" {
 		return Check{Name: "ssh:" + label, Category: "connectivity",
 			Status: "WARN", Detail: "ssh_host not configured (needed for rsync/fetch/failover)"}
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cmdCtx, "ssh",
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "ConnectTimeout=8",
-		sshHost, "echo ok").CombinedOutput()
+	args := append(sshCfg.ExtraArgs(), "-o", "ConnectTimeout=8", sshHost, "echo ok")
+	out, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return Check{Name: "ssh:" + label, Category: "connectivity",
 			Status: "FAIL", Detail: fmt.Sprintf("ssh %s: %v: %s", sshHost, err, strings.TrimSpace(string(out)))}
@@ -263,26 +259,21 @@ func pgInRecoveryCheck(ctx context.Context, label string, pg config.PostgresConf
 		Status: "PASS", Detail: "in recovery (standby)"}
 }
 
-func dbKeyPresentCheck(ctx context.Context, label, sshHost string) Check {
+func dbKeyPresentCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
 	if sshHost == "" {
 		return Check{Name: "dbkey:" + label, Category: "dbkey",
 			Status: "WARN", Detail: "ssh_host not configured"}
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	// Try with sudo first, then without. The secrets.yml file is owned by
-	// root but may be readable by the git user or via sudo.
-	out, err := exec.CommandContext(cmdCtx, "ssh",
-		"-o", "StrictHostKeyChecking=accept-new",
-		sshHost,
-		"sudo grep -c 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep -c 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || echo 0",
-	).CombinedOutput()
+	remoteCmd := "sudo grep -c 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep -c 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || echo 0"
+	args := append(sshCfg.ExtraArgs(), sshHost, remoteCmd)
+	out, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return Check{Name: "dbkey:" + label, Category: "dbkey",
 			Status: "FAIL", Detail: fmt.Sprintf("ssh: %v", err)}
 	}
 	count := strings.TrimSpace(string(out))
-	// Extract just the last line (sudo may output a password prompt line)
 	lines := strings.Split(count, "\n")
 	count = strings.TrimSpace(lines[len(lines)-1])
 	if count == "0" {
@@ -293,8 +284,8 @@ func dbKeyPresentCheck(ctx context.Context, label, sshHost string) Check {
 		Status: "PASS", Detail: "present in secrets.yml"}
 }
 
-func dbKeyParityCheck(ctx context.Context, primarySSH, secondarySSH, secondaryName string) Check {
-	err := dbkey.Check(ctx, primarySSH, secondarySSH)
+func dbKeyParityCheck(ctx context.Context, primarySSH, secondarySSH, secondaryName string, sshCfg sshexec.Config) Check {
+	err := dbkey.CheckWithConfig(ctx, primarySSH, secondarySSH, sshCfg)
 	if err != nil {
 		return Check{Name: "dbkey:parity:" + secondaryName, Category: "dbkey",
 			Status: "FAIL", Detail: err.Error()}
@@ -303,24 +294,23 @@ func dbKeyParityCheck(ctx context.Context, primarySSH, secondarySSH, secondaryNa
 		Status: "PASS", Detail: "primary and secondary match"}
 }
 
-func rsyncCheck(ctx context.Context, label, sshHost string) Check {
-	return remoteBinaryCheck(ctx, label, "rsync", sshHost, "rsync --version")
+func rsyncCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
+	return remoteBinaryCheck(ctx, label, "rsync", sshHost, "rsync --version", sshCfg)
 }
 
-func gitCheck(ctx context.Context, label, sshHost string) Check {
-	return remoteBinaryCheck(ctx, label, "git", sshHost, "git --version")
+func gitCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
+	return remoteBinaryCheck(ctx, label, "git", sshHost, "git --version", sshCfg)
 }
 
-func remoteBinaryCheck(ctx context.Context, label, bin, sshHost, cmd string) Check {
+func remoteBinaryCheck(ctx context.Context, label, bin, sshHost, cmd string, sshCfg sshexec.Config) Check {
 	if sshHost == "" {
 		return Check{Name: bin + ":" + label, Category: "tools",
 			Status: "WARN", Detail: "ssh_host not configured"}
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cmdCtx, "ssh",
-		"-o", "StrictHostKeyChecking=accept-new",
-		sshHost, cmd).CombinedOutput()
+	args := append(sshCfg.ExtraArgs(), sshHost, cmd)
+	out, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return Check{Name: bin + ":" + label, Category: "tools",
 			Status: "FAIL", Detail: fmt.Sprintf("%s not found: %v", bin, err)}
@@ -333,16 +323,15 @@ func remoteBinaryCheck(ctx context.Context, label, bin, sshHost, cmd string) Che
 		Status: "PASS", Detail: version}
 }
 
-func pathExistsCheck(ctx context.Context, label, sshHost, path, pathName string) Check {
+func pathExistsCheck(ctx context.Context, label, sshHost, path, pathName string, sshCfg sshexec.Config) Check {
 	if sshHost == "" {
 		return Check{Name: "path:" + label + ":" + pathName, Category: "filesystem",
 			Status: "WARN", Detail: "ssh_host not configured"}
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, err := exec.CommandContext(cmdCtx, "ssh",
-		"-o", "StrictHostKeyChecking=accept-new",
-		sshHost, "test", "-d", path).CombinedOutput()
+	args := append(sshCfg.ExtraArgs(), sshHost, "test", "-d", path)
+	_, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
 	if err != nil {
 		return Check{Name: "path:" + label + ":" + pathName, Category: "filesystem",
 			Status: "WARN", Detail: fmt.Sprintf("%s does not exist yet (will be created on first sync)", path)}

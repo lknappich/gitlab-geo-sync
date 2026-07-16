@@ -251,9 +251,9 @@ func buildReconcilers(ctx context.Context, cfg *config.Config, dryRun bool) ([]r
 	// Git data sync.
 	switch cfg.Primary.Git.Mode {
 	case "rsync":
-		recs = append(recs, gitrsync.New(&cfg.Primary, s, dryRun))
+		recs = append(recs, gitrsync.New(&cfg.Primary, s, dryRun, cfg.SSHExecConfig()))
 	case "fetch":
-		recs = append(recs, gitfetch.New(cfg.Primary.SSHHost, s.Git.ReposPath, s.Name, pgRec.PrimaryPool(), dryRun))
+		recs = append(recs, gitfetch.New(cfg.Primary.SSHHost, s.Git.ReposPath, s.Name, pgRec.PrimaryPool(), dryRun, cfg.SSHExecConfig()))
 	}
 
 	// Object storage.
@@ -272,7 +272,7 @@ func buildReconcilers(ctx context.Context, cfg *config.Config, dryRun bool) ([]r
 		}
 		recs = append(recs, osRec)
 	case "fs":
-		recs = append(recs, fsstorage.New(&cfg.Primary, s, dryRun))
+		recs = append(recs, fsstorage.New(&cfg.Primary, s, dryRun, cfg.SSHExecConfig()))
 	}
 
 	// Registry.

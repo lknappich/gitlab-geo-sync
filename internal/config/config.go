@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
+
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 // Config is the root configuration object.
@@ -26,10 +28,11 @@ type Config struct {
 	Sync         SyncConfig          `yaml:"sync"`
 	Metrics      MetricsConfig       `yaml:"metrics"`
 	Log          LogConfig           `yaml:"log"`
-	ControlDB    string              `yaml:"control_db"` // "sqlite://path" or "postgres://dsn"`
+	ControlDB    string              `yaml:"control_db"` // "sqlite://path" or "postgres://dsn"
 	Webhook      *WebhookConfig      `yaml:"webhook,omitempty"`
 	APIValidator *APIValidatorConfig `yaml:"api_validator,omitempty"`
 	Failover     *FailoverConfig     `yaml:"failover,omitempty"`
+	SSH          SSHConfig           `yaml:"ssh,omitempty"`
 }
 
 // SiteConfig describes one GitLab site (primary or secondary).
@@ -198,6 +201,23 @@ type FailoverConfig struct {
 	AutoFailover bool `yaml:"auto_failover,omitempty"`
 }
 
+// SSHConfig controls SSH host-key verification policy for all SSH-based
+// operations (rsync, git fetch, db_key_base checks, failover commands,
+// doctor checks). Production deployments should pin host keys via
+// known_hosts_file and leave strict_host_key_checking at its default
+// of "yes".
+type SSHConfig struct {
+	// KnownHostsFile is the path to a known_hosts file. When set,
+	// StrictHostKeyChecking defaults to "yes" and -o
+	// UserKnownHostsFile=<path> is passed to every ssh invocation.
+	KnownHostsFile string `yaml:"known_hosts_file,omitempty"`
+
+	// StrictHostKeyChecking overrides the default. Valid values:
+	// "yes", "no", "accept-new". When empty, defaults to "yes" if
+	// KnownHostsFile is set, otherwise "accept-new" (TOFU).
+	StrictHostKeyChecking string `yaml:"strict_host_key_checking,omitempty"`
+}
+
 // Load reads and validates a config file, expanding ${ENV} placeholders
 // and enforcing that all fields tagged env:"required" are non-empty.
 func Load(path string) (*Config, error) {
@@ -358,6 +378,14 @@ func (c *Config) warnInsecureSSL(_ *[]error) {
 // disambiguation; regenerated each process start.
 func (c *Config) InstanceID() string {
 	return uuid.NewString()
+}
+
+// SSHExecConfig returns the sshexec.Config derived from the SSH config block.
+func (c *Config) SSHExecConfig() sshexec.Config {
+	return sshexec.Config{
+		KnownHostsFile:        c.SSH.KnownHostsFile,
+		StrictHostKeyChecking: c.SSH.StrictHostKeyChecking,
+	}
 }
 
 // DSN constructs a libpq-style connection string for the control user.

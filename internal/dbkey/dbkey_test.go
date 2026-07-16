@@ -3,6 +3,8 @@ package dbkey
 import (
 	"context"
 	"testing"
+
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 func TestDbKeyRegexMatchesQuoted(t *testing.T) {
@@ -47,7 +49,7 @@ func TestDbKeyRegexMatchesLeadingSpaces(t *testing.T) {
 }
 
 func TestFetchKeyEmptySSHHost(t *testing.T) {
-	_, err := fetchKey(context.Background(), "")
+	_, err := fetchKey(context.Background(), "", sshexec.Default)
 	if err == nil {
 		t.Fatal("expected error for empty ssh_host")
 	}

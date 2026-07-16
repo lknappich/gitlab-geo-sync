@@ -14,6 +14,7 @@ import (
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 const name = "git_rsync"
@@ -23,15 +24,17 @@ type Reconciler struct {
 	sshHost string // primary host:port
 	srcPath string // primary repos path
 	dstPath string // secondary repos path
+	sshCfg  sshexec.Config
 	dryRun  bool
 }
 
 // New creates a git rsync reconciler from a primary/secondary config pair.
-func New(primary, secondary *config.SiteConfig, dryRun bool) *Reconciler {
+func New(primary, secondary *config.SiteConfig, dryRun bool, sshCfg sshexec.Config) *Reconciler {
 	return &Reconciler{
 		sshHost: primary.SSHHost,
 		srcPath: primary.Git.ReposPath,
 		dstPath: secondary.Git.ReposPath,
+		sshCfg:  sshCfg,
 		dryRun:  dryRun,
 	}
 }
@@ -47,7 +50,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 	start := time.Now()
 	args := []string{
 		"-az", "--delete", "--checksum",
-		"-e", "ssh -o StrictHostKeyChecking=accept-new",
+		"-e", r.sshCfg.SSHString(),
 		"--rsync-path", "sudo rsync",
 	}
 	if r.dryRun {

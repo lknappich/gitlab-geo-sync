@@ -112,6 +112,13 @@ control_db: sqlite://data/geoctl.db
 #   primary_token: PRIMARY_API_TOKEN_PLACEHOLDER
 #   secondary_token: SECONDARY_API_TOKEN_PLACEHOLDER
 
+# Optional: SSH host-key verification policy.
+# Production deployments should pin host keys via known_hosts_file and
+# leave strict_host_key_checking at its default of "yes".
+# ssh:
+#   known_hosts_file: /etc/geoctl/known_hosts
+#   # strict_host_key_checking: yes  # default: yes when known_hosts_file is set, otherwise accept-new
+
 # Optional: failover controller.
 # failover:
 #   health_check_urls:

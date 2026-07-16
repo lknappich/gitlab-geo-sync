@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 func TestNewCollectsFSPaths(t *testing.T) {
@@ -20,7 +21,7 @@ func TestNewCollectsFSPaths(t *testing.T) {
 	}
 	secondary := &config.SiteConfig{}
 
-	r := New(primary, secondary, true)
+	r := New(primary, secondary, true, sshexec.Default)
 	if len(r.pathPairs) != 3 {
 		t.Errorf("expected 3 path pairs, got %d", len(r.pathPairs))
 	}
@@ -36,7 +37,7 @@ func TestNewNoRegistry(t *testing.T) {
 	}
 	secondary := &config.SiteConfig{}
 
-	r := New(primary, secondary, true)
+	r := New(primary, secondary, true, sshexec.Default)
 	if len(r.pathPairs) != 1 {
 		t.Errorf("expected 1 path pair, got %d", len(r.pathPairs))
 	}
@@ -51,7 +52,7 @@ func TestNewNoPaths(t *testing.T) {
 	}
 	secondary := &config.SiteConfig{}
 
-	r := New(primary, secondary, true)
+	r := New(primary, secondary, true, sshexec.Default)
 	if len(r.pathPairs) != 0 {
 		t.Errorf("expected 0 path pairs, got %d", len(r.pathPairs))
 	}

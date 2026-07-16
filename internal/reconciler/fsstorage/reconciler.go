@@ -13,6 +13,7 @@ import (
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
+	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
 
 const name = "fs_storage"
@@ -20,6 +21,7 @@ const name = "fs_storage"
 // Reconciler rsyncs multiple filesystem paths from primary to secondary.
 type Reconciler struct {
 	sshHost   string
+	sshCfg    sshexec.Config
 	pathPairs []PathPair
 	dryRun    bool
 }
@@ -34,9 +36,10 @@ type PathPair struct {
 // New creates an FS storage reconciler from the primary/secondary configs.
 // It collects all relevant path pairs from object_storage.fs_paths and
 // registry.fs_path.
-func New(primary, secondary *config.SiteConfig, dryRun bool) *Reconciler {
+func New(primary, secondary *config.SiteConfig, dryRun bool, sshCfg sshexec.Config) *Reconciler {
 	r := &Reconciler{
 		sshHost: primary.SSHHost,
+		sshCfg:  sshCfg,
 		dryRun:  dryRun,
 	}
 
@@ -110,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 func (r *Reconciler) rsyncPath(ctx context.Context, pair PathPair) error {
 	args := []string{
 		"-az", "--delete", "--checksum",
-		"-e", "ssh -o StrictHostKeyChecking=accept-new",
+		"-e", r.sshCfg.SSHString(),
 		"--rsync-path", "sudo rsync",
 	}
 	if r.dryRun {
