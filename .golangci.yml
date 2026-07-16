@@ -13,8 +13,11 @@ linters:
     - staticcheck
     - ineffassign
     - misspell
-    - gofmt
     - revive
+
+formatters:
+  enable:
+    - gofmt
 
 issues:
   max-issues-per-linter: 0
