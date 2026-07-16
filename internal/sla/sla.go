@@ -83,14 +83,14 @@ func Generate(ctx context.Context, w io.Writer) error {
 
 // Print writes the SLA report to w.
 func (r *Report) Print(w io.Writer) {
-	fmt.Fprintf(w, "=== gitlab-geo-sync SLA Report ===\n\n")
-	fmt.Fprintf(w, "PostgreSQL Replay Lag:\n")
-	fmt.Fprintf(w, "  Current: %s\n", r.PGLagCurrent)
-	fmt.Fprintf(w, "  Peak:    %s\n", r.PGLagPeak)
-	fmt.Fprintf(w, "\nLast Sync Age (oldest component): %s\n", r.LastSweepAge)
-	fmt.Fprintf(w, "\nDrift Events (cumulative): %d\n", r.DriftCount)
-	fmt.Fprintf(w, "Components Healthy: %d/%d\n", r.ComponentsHealthy, r.ComponentsTotal)
-	fmt.Fprintf(w, "\nRPO Estimate: %s (PG replay lag)\n", r.PGLagCurrent)
-	fmt.Fprintf(w, "RTO Estimate: ~2-5 min (pg_ctl promote + gitlab-ctl restart)\n")
-	fmt.Fprintf(w, "\nNote: RPO for in-flight Sidekiq jobs is ~last dequeue time.\n")
+	_, _ = fmt.Fprintf(w, "=== gitlab-geo-sync SLA Report ===\n\n")
+	_, _ = fmt.Fprintf(w, "PostgreSQL Replay Lag:\n")
+	_, _ = fmt.Fprintf(w, "  Current: %s\n", r.PGLagCurrent)
+	_, _ = fmt.Fprintf(w, "  Peak:    %s\n", r.PGLagPeak)
+	_, _ = fmt.Fprintf(w, "\nLast Sync Age (oldest component): %s\n", r.LastSweepAge)
+	_, _ = fmt.Fprintf(w, "\nDrift Events (cumulative): %d\n", r.DriftCount)
+	_, _ = fmt.Fprintf(w, "Components Healthy: %d/%d\n", r.ComponentsHealthy, r.ComponentsTotal)
+	_, _ = fmt.Fprintf(w, "\nRPO Estimate: %s (PG replay lag)\n", r.PGLagCurrent)
+	_, _ = fmt.Fprintf(w, "RTO Estimate: ~2-5 min (pg_ctl promote + gitlab-ctl restart)\n")
+	_, _ = fmt.Fprintf(w, "\nNote: RPO for in-flight Sidekiq jobs is ~last dequeue time.\n")
 }

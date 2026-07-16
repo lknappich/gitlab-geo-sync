@@ -140,7 +140,7 @@ func (r *Reconciler) listRepositories(ctx context.Context, client *http.Client, 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, errAuthRequired
 	}
@@ -167,7 +167,7 @@ func (r *Reconciler) listTags(ctx context.Context, client *http.Client, baseURL,
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, errAuthRequired
 	}

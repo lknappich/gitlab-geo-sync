@@ -48,7 +48,7 @@ func Run(w io.Writer) (*Answers, error) {
 	a := &Answers{}
 
 	out := func(format string, args ...any) {
-		fmt.Fprintf(w, format, args...)
+		_, _ = fmt.Fprintf(w, format, args...)
 	}
 	out("\n=== gitlab-geo-sync configuration wizard ===\n\n")
 	out("This will generate a config.yaml. All secrets will be\n")
@@ -191,9 +191,9 @@ func GenerateYAML(a *Answers, w io.Writer) error {
 
 func prompt(r *bufio.Reader, w io.Writer, label, def string) string {
 	if def != "" {
-		fmt.Fprintf(w, "%s [%s]: ", label, def)
+		_, _ = fmt.Fprintf(w, "%s [%s]: ", label, def)
 	} else {
-		fmt.Fprintf(w, "%s: ", label)
+		_, _ = fmt.Fprintf(w, "%s: ", label)
 	}
 	line, _ := r.ReadString('\n')
 	line = strings.TrimSpace(line)
@@ -208,7 +208,7 @@ func confirm(r *bufio.Reader, w io.Writer, label string, def bool) bool {
 	if !def {
 		defStr = "n"
 	}
-	fmt.Fprintf(w, "%s [y/n, default=%s]: ", label, defStr)
+	_, _ = fmt.Fprintf(w, "%s [y/n, default=%s]: ", label, defStr)
 	line, _ := r.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	if line == "" {
