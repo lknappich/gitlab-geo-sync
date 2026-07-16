@@ -63,8 +63,8 @@ go test ./...
 go vet ./...
 ```
 
-Before committing, run all three. The CI workflow also runs
-`govulncheck ./...`.
+Before committing, run all three (or `make build test vet`). The CI
+workflow also runs `govulncheck ./...` and `staticcheck ./...`.
 
 ## Style
 
