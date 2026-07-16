@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -183,4 +184,169 @@ secondaries:
 	if err == nil {
 		t.Fatal("expected error for invalid git mode, got nil")
 	}
+}
+
+func TestDSNDefaultSSLModeIsRequire(t *testing.T) {
+	pg := PostgresConfig{
+		Host:     "db.example.com",
+		Port:     5432,
+		DB:       "gitlab",
+		User:     "gitlab",
+		Password: "secret",
+	}
+	dsn := pg.DSN()
+	if !strings.Contains(dsn, "sslmode=require") {
+		t.Errorf("expected sslmode=require in DSN, got: %s", dsn)
+	}
+	if strings.Contains(dsn, "sslmode=disable") {
+		t.Errorf("DSN should not contain sslmode=disable by default, got: %s", dsn)
+	}
+}
+
+func TestDSNExplicitDisable(t *testing.T) {
+	pg := PostgresConfig{
+		Host:     "localhost",
+		Port:     5432,
+		DB:       "gitlab",
+		User:     "gitlab",
+		Password: "secret",
+		SSLMode:  "disable",
+	}
+	dsn := pg.DSN()
+	if !strings.Contains(dsn, "sslmode=disable") {
+		t.Errorf("expected sslmode=disable when explicitly set, got: %s", dsn)
+	}
+}
+
+func TestDSNPasswordSpecialChars(t *testing.T) {
+	tests := []struct {
+		name string
+		pw   string
+	}{
+		{"simple", "p@ssw0rd"},
+		{"with space", "p@ss word"},
+		{"with single quote", "p@ss'word"},
+		{"with backslash", `p@ss\word`},
+		{"with space quote backslash", `p@'s w\rd`},
+		{"empty", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pg := PostgresConfig{
+				Host:     "db.example.com",
+				Port:     5432,
+				DB:       "gitlab",
+				User:     "gitlab",
+				Password: tc.pw,
+			}
+			dsn := pg.DSN()
+			if !strings.Contains(dsn, "password=") {
+				t.Fatalf("DSN missing password field: %s", dsn)
+			}
+			parsed := parseDSNPassword(t, dsn)
+			if parsed != tc.pw {
+				t.Errorf("password round-trip failed: got %q, want %q (dsn=%s)", parsed, tc.pw, dsn)
+			}
+		})
+	}
+}
+
+func TestReplicationDSNContainsAppName(t *testing.T) {
+	pg := PostgresConfig{
+		Host:                "db.example.com",
+		Port:                5432,
+		ReplicationUser:     "repl",
+		ReplicationPassword: "secret",
+	}
+	dsn := pg.ReplicationDSN()
+	if !strings.Contains(dsn, "application_name=gitlab-geo-sync") {
+		t.Errorf("expected application_name in replication DSN, got: %s", dsn)
+	}
+	if !strings.Contains(dsn, "sslmode=require") {
+		t.Errorf("expected sslmode=require in replication DSN, got: %s", dsn)
+	}
+}
+
+func TestDSNSSLCertPaths(t *testing.T) {
+	pg := PostgresConfig{
+		Host:        "db.example.com",
+		Port:        5432,
+		DB:          "gitlab",
+		User:        "gitlab",
+		Password:    "secret",
+		SSLMode:     "verify-full",
+		SSLRootCert: "/etc/ssl/certs/ca.pem",
+		SSLCert:     "/etc/ssl/client.pem",
+		SSLKey:      "/etc/ssl/client.key",
+	}
+	dsn := pg.DSN()
+	for _, want := range []string{
+		"sslmode=verify-full",
+		"sslrootcert=/etc/ssl/certs/ca.pem",
+		"sslcert=/etc/ssl/client.pem",
+		"sslkey=/etc/ssl/client.key",
+	} {
+		if !strings.Contains(dsn, want) {
+			t.Errorf("expected %q in DSN, got: %s", want, dsn)
+		}
+	}
+}
+
+func TestQuoteLibPQValue(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"simple", "simple"},
+		{"", "''"},
+		{"has space", "'has space'"},
+		{"has'quote", "'has\\'quote'"},
+		{`has\backslash`, `'has\\backslash'`},
+		{"no-special-chars-123", "no-special-chars-123"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			got := quoteLibPQValue(tc.in)
+			if got != tc.want {
+				t.Errorf("quoteLibPQValue(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func parseDSNPassword(t *testing.T, dsn string) string {
+	t.Helper()
+	idx := strings.Index(dsn, "password=")
+	if idx < 0 {
+		t.Fatalf("no password= field in DSN: %s", dsn)
+	}
+	v := dsn[idx+len("password="):]
+	if v == "''" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "'") {
+		spaceIdx := strings.IndexByte(v, ' ')
+		if spaceIdx < 0 {
+			return v
+		}
+		return v[:spaceIdx]
+	}
+	inner := v[1:]
+	var sb strings.Builder
+	for i := 0; i < len(inner); i++ {
+		if inner[i] == '\\' && i+1 < len(inner) {
+			if inner[i+1] == '\\' {
+				sb.WriteByte('\\')
+				i++
+			} else if inner[i+1] == '\'' {
+				sb.WriteByte('\'')
+				i++
+			}
+			continue
+		}
+		if inner[i] == '\'' {
+			break
+		}
+		sb.WriteByte(inner[i])
+	}
+	return sb.String()
 }

@@ -110,6 +110,7 @@ func GenerateYAML(a *Answers, w io.Writer) error {
 	b.WriteString("    password: ${PG_CTRL_PASSWORD}\n")
 	b.WriteString(fmt.Sprintf("    replication_user: %s\n", a.PrimaryReplUser))
 	b.WriteString("    replication_password: ${PG_REPL_PASSWORD}\n")
+	b.WriteString("    sslmode: require\n")
 	if a.PrimarySlot != "" {
 		b.WriteString(fmt.Sprintf("    slot_name: %s\n", a.PrimarySlot))
 	}

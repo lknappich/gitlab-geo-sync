@@ -46,7 +46,7 @@ services:
       S3_AK: ${S3_AK:-minioadmin}
       S3_SK: ${S3_SK:-minioadmin}
     volumes:
-      - ../deploy/config.example.yaml:/etc/geoctl/config.yaml:ro
+      - ./config.yaml:/etc/geoctl/config.yaml:ro
     command: ["serve", "-c", "/etc/geoctl/config.yaml"]
 
 volumes:

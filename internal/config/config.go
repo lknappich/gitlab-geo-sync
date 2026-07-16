@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -59,6 +61,19 @@ type PostgresConfig struct {
 
 	// SlotName is the logical replication slot name to use on the primary.
 	SlotName string `yaml:"slot_name,omitempty"`
+
+	// SSLMode controls TLS for the control and replication connections.
+	// Valid values: disable, allow, prefer, require, verify-ca, verify-full.
+	// Defaults to "require" when empty — never sends passwords in cleartext
+	// unless the operator explicitly sets sslmode: disable.
+	SSLMode string `yaml:"sslmode,omitempty"`
+
+	// SSLRootCert is the path to the CA certificate for verify-ca/verify-full.
+	SSLRootCert string `yaml:"ssl_root_cert,omitempty"`
+
+	// SSLCert / SSLKey are the client certificate and key for mutual TLS.
+	SSLCert string `yaml:"ssl_cert,omitempty"`
+	SSLKey  string `yaml:"ssl_key,omitempty"`
 }
 
 // GitStorage describes where and how git repository data lives.
@@ -253,6 +268,7 @@ func (c *Config) validate() error {
 	if c.Primary.Postgres.ReplicationPassword == "" {
 		errs = append(errs, errors.New("primary.postgres.replication_password is required (via env)"))
 	}
+	c.warnInsecureSSL(&errs)
 	if c.Primary.Git.Mode == "" {
 		errs = append(errs, errors.New("primary.git.mode is required (rsync|fetch)"))
 	}
@@ -322,6 +338,22 @@ func (c *Config) validate() error {
 	return errors.Join(errs...)
 }
 
+// warnInsecureSSL logs a warning for any connection that explicitly
+// uses sslmode=disable. This is a non-fatal warning so dev/local
+// setups still work, but production operators are alerted.
+func (c *Config) warnInsecureSSL(_ *[]error) {
+	check := func(label string, pg PostgresConfig) {
+		if pg.SSLMode == "disable" {
+			log.Warn().Str("site", label).
+				Msg("postgres.sslmode is 'disable' — passwords will be sent in cleartext; use only for local dev")
+		}
+	}
+	check("primary", c.Primary.Postgres)
+	for i, s := range c.Secondaries {
+		check(fmt.Sprintf("secondaries[%d]:%s", i, s.Name), s.Postgres)
+	}
+}
+
 // InstanceID returns a stable per-process identifier for log/metrics
 // disambiguation; regenerated each process start.
 func (c *Config) InstanceID() string {
@@ -329,13 +361,74 @@ func (c *Config) InstanceID() string {
 }
 
 // DSN constructs a libpq-style connection string for the control user.
+// Values are libpq-quoted so passwords with spaces, quotes, or
+// backslashes are handled correctly. SSL defaults to require.
 func (p PostgresConfig) DSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		p.Host, p.Port, p.User, p.Password, p.DB)
+	return p.buildDSN(p.User, p.Password, p.DB, "")
 }
 
 // ReplicationDSN constructs a libpq connection string for the WAL receiver.
 func (p PostgresConfig) ReplicationDSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=replication sslmode=disable application_name=gitlab-geo-sync",
-		p.Host, p.Port, p.ReplicationUser, p.ReplicationPassword)
+	return p.buildDSN(p.ReplicationUser, p.ReplicationPassword, "replication",
+		"application_name=gitlab-geo-sync")
+}
+
+func (p PostgresConfig) buildDSN(user, password, dbname, extra string) string {
+	pairs := []kv{
+		{"host", p.Host},
+		{"port", strconv.Itoa(p.Port)},
+		{"user", user},
+		{"password", password},
+		{"dbname", dbname},
+		{"sslmode", p.effectiveSSLMode()},
+	}
+	if p.SSLRootCert != "" {
+		pairs = append(pairs, kv{"sslrootcert", p.SSLRootCert})
+	}
+	if p.SSLCert != "" {
+		pairs = append(pairs, kv{"sslcert", p.SSLCert})
+	}
+	if p.SSLKey != "" {
+		pairs = append(pairs, kv{"sslkey", p.SSLKey})
+	}
+	var sb strings.Builder
+	for i, kv := range pairs {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(kv.key)
+		sb.WriteByte('=')
+		sb.WriteString(quoteLibPQValue(kv.val))
+	}
+	if extra != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(extra)
+	}
+	return sb.String()
+}
+
+func (p PostgresConfig) effectiveSSLMode() string {
+	if p.SSLMode == "" {
+		return "require"
+	}
+	return p.SSLMode
+}
+
+type kv struct {
+	key string
+	val string
+}
+
+// quoteLibPQValue quotes a value for a libpq key=value DSN per the
+// documented rules: if the value is empty or contains no special
+// characters (space, ', \), it is returned as-is. Otherwise it is
+// wrapped in single quotes with ' and \ backslash-escaped.
+func quoteLibPQValue(v string) string {
+	if v == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(v, " '\\") {
+		return v
+	}
+	return "'" + strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(v) + "'"
 }

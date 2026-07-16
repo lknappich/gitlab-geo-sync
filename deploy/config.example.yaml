@@ -22,6 +22,15 @@ primary:
     replication_user: gitlab_repl
     replication_password: ${PG_REPL_PASSWORD}
     slot_name: gitlab_geo_sync
+    # TLS: defaults to 'require' (never cleartext). Set to 'disable' only
+    # for local dev (a warning is logged). Other valid values:
+    # allow, prefer, verify-ca, verify-full.
+    sslmode: require
+    # For verify-ca / verify-full, point to the CA cert:
+    # ssl_root_cert: /etc/ssl/certs/pg-ca.pem
+    # For mutual TLS:
+    # ssl_cert: /etc/ssl/client-cert.pem
+    # ssl_key: /etc/ssl/client-key.pem
   git:
     # "rsync": filesystem copy of repos_path (requires SSHHost).
     # "fetch": per-project git fetch via Gitaly/SSH (no FS access needed).
@@ -52,6 +61,7 @@ secondaries:
       password: ${PG_CTRL_PASSWORD}
       replication_user: gitlab_repl
       replication_password: ${SEC_REPL_PASSWORD}
+      sslmode: require
     git:
       mode: rsync
       repos_path: /var/opt/gitlab/git-data/repositories
