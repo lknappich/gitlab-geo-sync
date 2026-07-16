@@ -419,6 +419,9 @@ func (c *Config) validate() error {
 		if c.Failover.DNSPlugin == "" {
 			c.Failover.DNSPlugin = "none"
 		}
+		if c.Failover.AutoFailover {
+			log.Warn().Msg("failover.auto_failover is true — automatic promotion is enabled; this is dangerous and bypasses the human gate")
+		}
 	}
 	return errors.Join(errs...)
 }

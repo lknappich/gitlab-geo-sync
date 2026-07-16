@@ -80,6 +80,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 			continue
 		}
 		if pCount != sCount {
+			if isApproxEqual(pCount, sCount) {
+				continue
+			}
 			drifts++
 			result.Remaining++
 			metrics.DriftTotal.WithLabelValues("db:"+table, "warning").Inc()
@@ -117,6 +120,25 @@ func rowCount(ctx context.Context, pool *pgxpool.Pool, table string) (int64, err
 		return 0, err
 	}
 	return n, nil
+}
+
+// isApproxEqual returns true if two reltuples estimates are close enough
+// that the difference is likely just planner-estimate noise rather than
+// real drift. Uses a 10% tolerance band (minimum 5 rows). This avoids
+// false drift alerts from ANALYZE timing differences across two databases.
+func isApproxEqual(a, b int64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	tolerance := a / 10
+	if b > a {
+		tolerance = b / 10
+	}
+	if tolerance < 5 {
+		tolerance = 5
+	}
+	return diff <= tolerance
 }
 
 // sampleGitFsck walks the repos path, picks a random sample of .git

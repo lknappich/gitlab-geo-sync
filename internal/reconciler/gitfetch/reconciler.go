@@ -15,10 +15,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/projectpath"
@@ -56,6 +58,7 @@ func (r *Reconciler) Name() string { return name }
 
 // Reconcile queries the DB for all project repository paths, then runs
 // `git fetch --prune` on each local repo against the primary's SSH URL.
+// Fetching is bounded-parallel via a worker pool sized by maxParallel.
 func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 	start := time.Now()
 
@@ -69,20 +72,35 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 		return reconciler.Result{OK: true, Detail: "no projects to sync"}
 	}
 
-	failed := 0
-	repaired := 0
+	parallel := r.maxParallel
+	if parallel < 1 {
+		parallel = 1
+	}
+	if parallel > len(projects) {
+		parallel = len(projects)
+	}
+
+	var failed, repaired int64
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(parallel)
+
 	for _, p := range projects {
+		p := p
 		select {
-		case <-ctx.Done():
-			return reconciler.Result{OK: false, Detail: "cancelled", Remaining: len(projects)}
+		case <-gctx.Done():
+			break
 		default:
 		}
-		if r.fetchOne(ctx, p) {
-			repaired++
-		} else {
-			failed++
-		}
+		g.Go(func() error {
+			if r.fetchOne(gctx, p) {
+				atomic.AddInt64(&repaired, 1)
+			} else {
+				atomic.AddInt64(&failed, 1)
+			}
+			return nil
+		})
 	}
+	_ = g.Wait()
 
 	elapsed := time.Since(start)
 	resultStr := "ok"
@@ -95,16 +113,16 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 		metrics.DriftTotal.WithLabelValues(name, "warning").Inc()
 		return reconciler.Result{
 			OK:        false,
-			Detail:    fmt.Sprintf("fetched %d/%d projects in %s (%d failed)", repaired, len(projects), elapsed, failed),
-			Repaired:  repaired,
-			Remaining: failed,
+			Detail:    fmt.Sprintf("fetched %d/%d projects in %s (%d failed, parallel=%d)", repaired, len(projects), elapsed, failed, parallel),
+			Repaired:  int(repaired),
+			Remaining: int(failed),
 		}
 	}
 	metrics.LastSyncTimestamp.WithLabelValues(name).Set(float64(time.Now().Unix()))
 	return reconciler.Result{
 		OK:       true,
-		Detail:   fmt.Sprintf("fetched %d projects in %s", len(projects), elapsed),
-		Repaired: repaired,
+		Detail:   fmt.Sprintf("fetched %d projects in %s (parallel=%d)", len(projects), elapsed, parallel),
+		Repaired: int(repaired),
 	}
 }
 
