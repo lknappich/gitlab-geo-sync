@@ -41,5 +41,6 @@ multi-arch binaries and Docker images. The release pipeline also runs
 
 ## Code of conduct
 
-Be excellent to each other. Disagreements about architecture are welcome;
-disagreements about people are not.
+See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Be excellent to each
+other. Disagreements about architecture are welcome; disagreements about
+people are not.

@@ -1,4 +1,4 @@
-.PHONY: all build test vet lint fmt fmt-check coverage vuln clean install
+.PHONY: all build test vet lint fmt fmt-check coverage vuln docker release-snapshot clean install
 
 all: build
 
@@ -12,7 +12,7 @@ vet:
 	go vet ./...
 
 lint:
-	staticcheck ./...
+	golangci-lint run --timeout 5m
 
 fmt:
 	gofmt -w .
@@ -25,6 +25,12 @@ coverage:
 
 vuln:
 	govulncheck ./...
+
+docker:
+	docker build -t geoctl:dev .
+
+release-snapshot:
+	goreleaser release --snapshot --clean
 
 clean:
 	rm -f coverage.txt
