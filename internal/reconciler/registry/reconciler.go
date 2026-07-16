@@ -5,6 +5,11 @@
 // (already replicated via S3/fs). This reconciler validates that the
 // registry API on both sides returns the same set of repositories and
 // manifest digests.
+//
+// Note: GitLab's container registry requires Bearer token authentication
+// (JWT from the auth realm). When a 401 is received, the reconciler treats
+// it as "unconfigured/skip" rather than reporting false drift. To use this
+// reconciler, configure a registry token or disable it in config.
 package registry
 
 import (
@@ -61,12 +66,18 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 
 	pRepos, err := r.listRepositories(ctx, r.primaryClient, r.primaryURL)
 	if err != nil {
+		if isAuthError(err) {
+			return reconciler.Result{OK: true, Detail: "registry: primary requires auth (skipped — configure a token to enable)"}
+		}
 		metrics.DriftTotal.WithLabelValues(name, "critical").Inc()
 		return reconciler.Result{OK: false, Detail: fmt.Sprintf("primary list repos: %v", err), Remaining: 1}
 	}
 
 	sRepos, err := r.listRepositories(ctx, r.secondaryClient, r.secondaryURL)
 	if err != nil {
+		if isAuthError(err) {
+			return reconciler.Result{OK: true, Detail: "registry: secondary requires auth (skipped — configure a token to enable)"}
+		}
 		metrics.DriftTotal.WithLabelValues(name, "critical").Inc()
 		return reconciler.Result{OK: false, Detail: fmt.Sprintf("secondary list repos: %v", err), Remaining: 1}
 	}
@@ -130,6 +141,9 @@ func (r *Reconciler) listRepositories(ctx context.Context, client *http.Client, 
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errAuthRequired
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("catalog: status %d: %s", resp.StatusCode, string(body))
@@ -154,6 +168,9 @@ func (r *Reconciler) listTags(ctx context.Context, client *http.Client, baseURL,
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errAuthRequired
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("tags for %s: status %d", repo, resp.StatusCode)
 	}
@@ -169,6 +186,12 @@ func (r *Reconciler) listTags(ctx context.Context, client *http.Client, baseURL,
 		set[t] = true
 	}
 	return set, nil
+}
+
+var errAuthRequired = fmt.Errorf("authentication required (401)")
+
+func isAuthError(err error) bool {
+	return err == errAuthRequired
 }
 
 func toSet(s []string) map[string]bool {

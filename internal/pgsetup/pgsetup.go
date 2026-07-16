@@ -44,7 +44,6 @@ func Run(ctx context.Context, opts Options) error {
 		"-D", opts.DataDir,
 		"-d", opts.PrimaryDSN,
 		"-X", "stream",
-		"-S", "main", // main WAL segment stream; overridden by SlotName below
 		"-c", "fast",
 		"-R", // write standby.signal + primary_conninfo
 		"-P",
@@ -89,6 +88,8 @@ func checkDataDir(dir string) error {
 
 // appendConnInfoAppname appends/updates the primary_conninfo line in
 // postgresql.auto.conf so application_name is set for pg_stat_replication.
+// It parses the file line-by-line, handling missing/malformed lines and
+// ensuring a trailing newline.
 func appendConnInfoAppname(dataDir, appName string) error {
 	if appName == "" {
 		return nil
@@ -103,17 +104,29 @@ func appendConnInfoAppname(dataDir, appName string) error {
 	for i, line := range lines {
 		if strings.HasPrefix(line, "primary_conninfo = ") {
 			if !strings.Contains(line, "application_name=") {
-				lines[i] = strings.TrimRight(line, "'") +
-					" application_name=" + appName + "'"
+				lines[i] = injectAppName(line, appName)
 			}
 			found = true
 			break
 		}
 	}
 	if !found {
-		lines = append(lines, fmt.Sprintf(
-			"primary_conninfo = '%s application_name=%s'",
-			strings.Trim(string(content), "\n'"), appName))
+		lines = append(lines, fmt.Sprintf("primary_conninfo = 'application_name=%s'", appName))
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return os.WriteFile(path, []byte(out), 0o600)
+}
+
+// injectAppName inserts application_name=appName before the closing
+// quote of a primary_conninfo line. Handles both single-quoted and
+// unquoted values.
+func injectAppName(line, appName string) string {
+	idx := strings.LastIndex(line, "'")
+	if idx < 0 {
+		return line + " application_name=" + appName + "'"
+	}
+	return line[:idx] + " application_name=" + appName + "'"
 }
