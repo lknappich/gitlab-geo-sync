@@ -47,13 +47,15 @@ func Run(w io.Writer) (*Answers, error) {
 	reader := bufio.NewReader(os.Stdin)
 	a := &Answers{}
 
-	fmt.Fprintln(w, "\n=== gitlab-geo-sync configuration wizard ===")
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "This will generate a config.yaml. All secrets will be")
-	fmt.Fprintln(w, "referenced as ${ENV_VAR} placeholders — export them before running geoctl.")
+	out := func(format string, args ...any) {
+		fmt.Fprintf(w, format, args...)
+	}
+	out("\n=== gitlab-geo-sync configuration wizard ===\n\n")
+	out("This will generate a config.yaml. All secrets will be\n")
+	out("referenced as ${ENV_VAR} placeholders — export them before running geoctl.\n")
 
 	// --- Primary ---
-	fmt.Fprintln(w, "--- PRIMARY ---")
+	out("\n--- PRIMARY ---\n")
 	a.PrimaryName = prompt(reader, w, "Primary site name", "primary")
 	a.PrimaryURL = prompt(reader, w, "Primary external URL", "https://gitlab.primary.example.com")
 	a.PrimarySSHHost = prompt(reader, w, "Primary SSH host:port", "primary.example.com:22")
@@ -67,7 +69,7 @@ func Run(w io.Writer) (*Answers, error) {
 	a.PrimaryReposPath = prompt(reader, w, "Primary repos path", "/var/opt/gitlab/git-data/repositories")
 
 	// --- Secondary ---
-	fmt.Fprintln(w, "\n--- SECONDARY ---")
+	out("\n--- SECONDARY ---\n")
 	a.SecondaryName = prompt(reader, w, "Secondary site name", "secondary")
 	a.SecondaryURL = prompt(reader, w, "Secondary external URL", "https://gitlab.secondary.example.com")
 	a.SecondarySSHHost = prompt(reader, w, "Secondary SSH host:port", "secondary.example.com:22")
@@ -76,7 +78,7 @@ func Run(w io.Writer) (*Answers, error) {
 	a.SecondaryReposPath = prompt(reader, w, "Secondary repos path", "/var/opt/gitlab/git-data/repositories")
 
 	// --- Object storage ---
-	fmt.Fprintln(w, "\n--- OBJECT STORAGE ---")
+	out("\n--- OBJECT STORAGE ---\n")
 	a.ObjectStorageBackend = prompt(reader, w, "Object storage backend (s3|fs)", "s3")
 	if a.ObjectStorageBackend == "s3" {
 		a.S3Region = prompt(reader, w, "S3 region", "eu-west-1")
@@ -86,7 +88,7 @@ func Run(w io.Writer) (*Answers, error) {
 	}
 
 	// --- Options ---
-	fmt.Fprintln(w, "\n--- OPTIONS ---")
+	out("\n--- OPTIONS ---\n")
 	a.ReadOnlySecondary = confirm(reader, w, "Enforce read-only mode on secondary?", true)
 	a.FailoverEnabled = confirm(reader, w, "Enable failover controller?", false)
 

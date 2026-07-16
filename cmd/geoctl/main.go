@@ -652,7 +652,7 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("create %s: %w", outputPath, err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			if err := initcmd.GenerateYAML(answers, f); err != nil {
 				return err
 			}
