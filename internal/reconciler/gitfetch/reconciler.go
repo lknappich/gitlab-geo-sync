@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
+	"github.com/anomalyco/gitlab-geo-sync/internal/projectpath"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
 	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
 )
@@ -229,8 +230,8 @@ func (r *Reconciler) fetchOne(ctx context.Context, p projectRow) bool {
 // per-project sync. Returns an error if the project cannot be found or
 // the fetch fails.
 func (r *Reconciler) FetchProject(ctx context.Context, projectPath string) error {
-	if projectPath == "" {
-		return fmt.Errorf("empty project path")
+	if err := projectpath.Validate(projectPath); err != nil {
+		return fmt.Errorf("invalid project path: %w", err)
 	}
 	repoPath := projectPath + ".git"
 	p := projectRow{RepoPath: repoPath}

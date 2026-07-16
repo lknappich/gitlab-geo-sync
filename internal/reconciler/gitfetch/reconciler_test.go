@@ -51,3 +51,11 @@ func TestFetchProjectEmptyPath(t *testing.T) {
 		t.Fatal("expected error for empty path")
 	}
 }
+
+func TestFetchProjectRejectsTraversal(t *testing.T) {
+	r := &Reconciler{}
+	err := r.FetchProject(nil, "../../etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for traversal path")
+	}
+}

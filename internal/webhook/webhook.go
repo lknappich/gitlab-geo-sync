@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
+	"github.com/anomalyco/gitlab-geo-sync/internal/projectpath"
 )
 
 // Server receives GitLab webhooks and triggers immediate sync.
@@ -28,6 +29,7 @@ type Server struct {
 	mux         *http.ServeMux
 	srv         *http.Server
 	ctx         context.Context
+	sem         chan struct{} // concurrency cap for triggered syncs
 }
 
 // TriggerFunc is called when a webhook is received. It receives the
@@ -35,26 +37,39 @@ type Server struct {
 // Implementations should run git fetch for the specific project.
 type TriggerFunc func(ctx context.Context, projectPath, eventType string) error
 
-// NewServer creates a webhook receiver.
-func NewServer(addr, secretToken string, trigger TriggerFunc) *Server {
+// NewServer creates a webhook receiver. Returns an error if secretToken
+// is empty — an empty token would cause hmac.Equal("","") to accept
+// every unauthenticated request.
+func NewServer(addr, secretToken string, trigger TriggerFunc) (*Server, error) {
+	if secretToken == "" {
+		return nil, fmt.Errorf("webhook secret_token must not be empty")
+	}
 	s := &Server{
 		addr:        addr,
 		secretToken: secretToken,
 		trigger:     trigger,
 		mux:         http.NewServeMux(),
+		sem:         make(chan struct{}, 8), // max 8 concurrent webhook-triggered syncs
 	}
 	s.mux.HandleFunc("/webhook", s.handleWebhook)
 	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	return s
+	return s, nil
 }
 
 // Start blocks until ctx is cancelled or the server errors.
 func (s *Server) Start(ctx context.Context) error {
 	s.ctx = ctx
-	s.srv = &http.Server{Addr: s.addr, Handler: s.mux}
+	s.srv = &http.Server{
+		Addr:              s.addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.srv.ListenAndServe() }()
 	log.Info().Str("addr", s.addr).Msg("webhook server listening")
@@ -97,13 +112,31 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	projectPath, err := extractProjectPath(body)
 	if err != nil {
 		log.Warn().Err(err).Str("event", eventType).Msg("webhook: extract project path")
-		// Still 200 so GitLab doesn't retry indefinitely.
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := projectpath.Validate(projectPath); err != nil {
+		log.Warn().Err(err).Str("project", projectPath).Str("event", eventType).
+			Msg("webhook: invalid project path")
+		metrics.DriftTotal.WithLabelValues("webhook", "warning").Inc()
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Trigger sync asynchronously with a concurrency cap so a flood of
+	// valid-token requests cannot spawn unbounded goroutines (DoS).
+	select {
+	case s.sem <- struct{}{}:
+	default:
+		metrics.DriftTotal.WithLabelValues("webhook", "warning").Inc()
+		log.Warn().Msg("webhook: concurrency limit reached, dropping trigger")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 
 	// Trigger sync asynchronously so we respond to GitLab quickly.
 	go func() {
+		defer func() { <-s.sem }()
 		parent := s.ctx
 		if parent == nil {
 			parent = context.Background()

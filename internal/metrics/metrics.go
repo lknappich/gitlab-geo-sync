@@ -86,7 +86,14 @@ func NewServer(addr string) *Server {
 
 // Start blocks until ctx is cancelled or the server errors.
 func (s *Server) Start(ctx context.Context) error {
-	s.srv = &http.Server{Addr: s.addr, Handler: s.handler}
+	s.srv = &http.Server{
+		Addr:              s.addr,
+		Handler:           s.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.srv.ListenAndServe() }()
 	log.Info().Str("addr", s.addr).Msg("metrics server listening")

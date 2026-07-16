@@ -200,7 +200,11 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 			// Webhook receiver (optional).
 			var whServer *webhook.Server
 			if cfg.Webhook != nil {
-				whServer = buildWebhookServer(cfg, recs, g.dryRun)
+				var whErr error
+				whServer, whErr = buildWebhookServer(cfg, recs, g.dryRun)
+				if whErr != nil {
+					return fmt.Errorf("webhook server: %w", whErr)
+				}
 				go func() { errCh <- whServer.Start(ctx) }()
 			}
 
@@ -307,7 +311,7 @@ func buildReconcilers(ctx context.Context, cfg *config.Config, dryRun bool) ([]r
 // the gitfetch reconciler's per-project FetchProject; in rsync mode or
 // when no gitfetch reconciler is available, it logs and falls back to
 // the next sweep.
-func buildWebhookServer(cfg *config.Config, recs []reconciler.Reconciler, dryRun bool) *webhook.Server {
+func buildWebhookServer(cfg *config.Config, recs []reconciler.Reconciler, dryRun bool) (*webhook.Server, error) {
 	var fetcher *gitfetch.Reconciler
 	for _, r := range recs {
 		if gf, ok := r.(*gitfetch.Reconciler); ok {

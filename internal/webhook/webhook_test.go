@@ -30,7 +30,10 @@ func TestExtractProjectPathMissing(t *testing.T) {
 }
 
 func TestHandleWebhookRejectsInvalidToken(t *testing.T) {
-	s := NewServer(":0", "secret", func(context.Context, string, string) error { return nil })
+	s, err := NewServer(":0", "secret", func(context.Context, string, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("X-Gitlab-Token", "wrong")
 	w := httptest.NewRecorder()
@@ -41,7 +44,10 @@ func TestHandleWebhookRejectsInvalidToken(t *testing.T) {
 }
 
 func TestHandleWebhookRejectsGet(t *testing.T) {
-	s := NewServer(":0", "secret", func(context.Context, string, string) error { return nil })
+	s, err := NewServer(":0", "secret", func(context.Context, string, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
 	w := httptest.NewRecorder()
 	s.mux.ServeHTTP(w, req)
@@ -52,10 +58,13 @@ func TestHandleWebhookRejectsGet(t *testing.T) {
 
 func TestHandleWebhookAcceptsValid(t *testing.T) {
 	called := make(chan string, 1)
-	s := NewServer(":0", "secret", func(ctx context.Context, p, e string) error {
+	s, err := NewServer(":0", "secret", func(ctx context.Context, p, e string) error {
 		called <- p
 		return nil
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := []byte(`{"project":{"path_with_namespace":"group/proj"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
 	req.Header.Set("X-Gitlab-Token", "secret")
@@ -72,6 +81,29 @@ func TestHandleWebhookAcceptsValid(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("trigger not called within 10s (debounce delay)")
+	}
+}
+
+func TestHandleWebhookRejectsEmptySecret(t *testing.T) {
+	_, err := NewServer(":0", "", func(context.Context, string, string) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for empty secret token")
+	}
+}
+
+func TestHandleWebhookRejectsPathTraversal(t *testing.T) {
+	s, err := NewServer(":0", "secret", func(context.Context, string, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"project":{"path_with_namespace":"../../etc/passwd"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Token", "secret")
+	req.Header.Set("X-Gitlab-Event", "Push Hook")
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("got %d, want 200 (accept but don't act)", w.Code)
 	}
 }
 
