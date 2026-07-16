@@ -19,26 +19,26 @@ import (
 
 // Config is the root configuration object.
 type Config struct {
-	Primary      SiteConfig   `yaml:"primary"`
-	Secondaries  []SiteConfig `yaml:"secondaries"`
-	Sync         SyncConfig   `yaml:"sync"`
-	Metrics      MetricsConfig `yaml:"metrics"`
-	Log          LogConfig    `yaml:"log"`
-	ControlDB    string       `yaml:"control_db"` // "sqlite://path" or "postgres://dsn"`
-	Webhook      *WebhookConfig `yaml:"webhook,omitempty"`
+	Primary      SiteConfig          `yaml:"primary"`
+	Secondaries  []SiteConfig        `yaml:"secondaries"`
+	Sync         SyncConfig          `yaml:"sync"`
+	Metrics      MetricsConfig       `yaml:"metrics"`
+	Log          LogConfig           `yaml:"log"`
+	ControlDB    string              `yaml:"control_db"` // "sqlite://path" or "postgres://dsn"`
+	Webhook      *WebhookConfig      `yaml:"webhook,omitempty"`
 	APIValidator *APIValidatorConfig `yaml:"api_validator,omitempty"`
-	Failover     *FailoverConfig `yaml:"failover,omitempty"`
+	Failover     *FailoverConfig     `yaml:"failover,omitempty"`
 }
 
 // SiteConfig describes one GitLab site (primary or secondary).
 type SiteConfig struct {
-	Name       string         `yaml:"name"`
-	ExternalURL string         `yaml:"external_url"`
-	Postgres   PostgresConfig `yaml:"postgres"`
-	Git        GitStorage     `yaml:"git"`
+	Name        string            `yaml:"name"`
+	ExternalURL string            `yaml:"external_url"`
+	Postgres    PostgresConfig    `yaml:"postgres"`
+	Git         GitStorage        `yaml:"git"`
 	ObjectStore ObjectStoreConfig `yaml:"object_storage"`
-	Registry   *RegistryConfig `yaml:"registry,omitempty"`
-	SSHHost    string         `yaml:"ssh_host,omitempty"` // host:port for rsync/git
+	Registry    *RegistryConfig   `yaml:"registry,omitempty"`
+	SSHHost     string            `yaml:"ssh_host,omitempty"` // host:port for rsync/git
 }
 
 // PostgresConfig: connection details for streaming replication control.
@@ -88,12 +88,12 @@ type ObjectStoreConfig struct {
 
 // S3Config describes an S3-compatible bucket pair.
 type S3Config struct {
-	Region         string `yaml:"region"`
-	PrimaryBucket  string `yaml:"primary_bucket"`
-	ReplicaBucket  string `yaml:"replica_bucket"`
-	AccessKey      string `yaml:"access_key" env:"required"`
-	SecretKey      string `yaml:"secret_key" env:"required"`
-	Endpoint       string `yaml:"endpoint,omitempty"` // for MinIO etc.
+	Region         string        `yaml:"region"`
+	PrimaryBucket  string        `yaml:"primary_bucket"`
+	ReplicaBucket  string        `yaml:"replica_bucket"`
+	AccessKey      string        `yaml:"access_key" env:"required"`
+	SecretKey      string        `yaml:"secret_key" env:"required"`
+	Endpoint       string        `yaml:"endpoint,omitempty"` // for MinIO etc.
 	ReplicationLag time.Duration `yaml:"replication_lag,omitempty"`
 }
 
@@ -146,7 +146,7 @@ type LogConfig struct {
 // WebhookConfig enables the webhook receiver that triggers immediate
 // per-project sync on push/create/delete events from the primary.
 type WebhookConfig struct {
-	Addr      string `yaml:"addr"`       // e.g. ":9102"
+	Addr        string `yaml:"addr"`                        // e.g. ":9102"
 	SecretToken string `yaml:"secret_token" env:"required"` // GitLab webhook secret token for validation
 }
 
@@ -154,8 +154,8 @@ type WebhookConfig struct {
 // validator that diffs counts between primary and secondary. It never
 // writes via API — strictly read-only.
 type APIValidatorConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	PrimaryToken  string `yaml:"primary_token" env:"required"`
+	Enabled        bool   `yaml:"enabled"`
+	PrimaryToken   string `yaml:"primary_token" env:"required"`
 	SecondaryToken string `yaml:"secondary_token" env:"required"`
 }
 

@@ -14,30 +14,31 @@ import (
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
 	"github.com/anomalyco/gitlab-geo-sync/internal/dbkey"
+	"github.com/anomalyco/gitlab-geo-sync/internal/readonly"
 )
 
 // Controller monitors primary health and orchestrates failover.
 type Controller struct {
-	cfg          *config.Config
-	primaryURL   string
-	healthURLs   []string
-	quorum       int
+	cfg           *config.Config
+	primaryURL    string
+	healthURLs    []string
+	quorum        int
 	checkInterval time.Duration
-	autoFailover bool
-	dryRun       bool
-	client       *http.Client
+	autoFailover  bool
+	dryRun        bool
+	client        *http.Client
 
 	// State.
-	primaryDown   atomic.Bool
+	primaryDown      atomic.Bool
 	consecutiveFails atomic.Int64
 }
 
 // New creates a failover controller from config.
 func New(cfg *config.Config, dryRun bool) *Controller {
 	fc := &Controller{
-		cfg:          cfg,
-		primaryURL:   cfg.Primary.ExternalURL,
-		healthURLs:   []string{cfg.Primary.ExternalURL},
+		cfg:           cfg,
+		primaryURL:    cfg.Primary.ExternalURL,
+		healthURLs:    []string{cfg.Primary.ExternalURL},
 		checkInterval: 10 * time.Second,
 		autoFailover:  false,
 		dryRun:        dryRun,
@@ -156,8 +157,7 @@ func (c *Controller) Promote(ctx context.Context, secondaryName string) error {
 					"-D /var/opt/gitlab/postgresql/data")
 		}},
 		{"disable read-only mode", func(ctx context.Context) error {
-			return c.sshSecondary(ctx, secondary.SSHHost,
-				"sudo gitlab-ctl deploy-registry-readonly stop")
+			return readonly.Disable(ctx, secondary.SSHHost, c.dryRun)
 		}},
 		{"start gitlab services on secondary", func(ctx context.Context) error {
 			return c.sshSecondary(ctx, secondary.SSHHost, "sudo gitlab-ctl start")
@@ -213,8 +213,7 @@ func (c *Controller) AdoptAsSecondary(ctx context.Context, oldPrimarySSH string)
 					newPrimary.Postgres.Host, newPrimary.Postgres.ReplicationUser))
 		}},
 		{"enable read-only mode on old primary", func(ctx context.Context) error {
-			return c.sshSecondary(ctx, oldPrimarySSH,
-				"sudo gitlab-ctl deploy-registry-readonly start")
+			return readonly.Enable(ctx, oldPrimarySSH, c.dryRun)
 		}},
 		{"start gitlab on old primary as secondary", func(ctx context.Context) error {
 			return c.sshSecondary(ctx, oldPrimarySSH, "sudo gitlab-ctl start")

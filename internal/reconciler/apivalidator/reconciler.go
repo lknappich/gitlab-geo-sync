@@ -7,7 +7,6 @@ package apivalidator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,11 +23,11 @@ const name = "api_validator"
 
 // Reconciler diffs API counts between primary and secondary.
 type Reconciler struct {
-	primaryURL   string
-	secondaryURL string
+	primaryURL     string
+	secondaryURL   string
 	primaryToken   string
 	secondaryToken string
-	client        *http.Client
+	client         *http.Client
 }
 
 // New creates an API validator from config.
@@ -48,8 +47,8 @@ func (r *Reconciler) Name() string { return name }
 
 // endpoints lists the API resources we diff by count.
 var endpoints = []struct {
-	path   string
-	label  string
+	path  string
+	label string
 }{
 	{"projects", "projects"},
 	{"users", "users"},
@@ -118,6 +117,3 @@ func (r *Reconciler) fetchCount(ctx context.Context, baseURL, token, path string
 	}
 	return total, nil
 }
-
-// json is imported for potential future use parsing response bodies.
-var _ = json.NewDecoder

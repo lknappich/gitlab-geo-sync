@@ -11,11 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
@@ -40,21 +41,21 @@ var tablesToCount = []string{
 
 // Reconciler compares row counts and samples git fsck.
 type Reconciler struct {
-	primary     *pgxpool.Pool
-	secondary   *pgxpool.Pool
+	primary       *pgxpool.Pool
+	secondary     *pgxpool.Pool
 	secondaryName string
-	reposPath   string
-	samplePct   float64 // 0.0–1.0
+	reposPath     string
+	samplePct     float64 // 0.0–1.0
 }
 
 // New creates a consistency sweep reconciler.
 func New(primary, secondary *pgxpool.Pool, secondaryName, reposPath string, samplePct float64) *Reconciler {
 	return &Reconciler{
-		primary:     primary,
-		secondary:   secondary,
+		primary:       primary,
+		secondary:     secondary,
 		secondaryName: secondaryName,
-		reposPath:    reposPath,
-		samplePct:    samplePct,
+		reposPath:     reposPath,
+		samplePct:     samplePct,
 	}
 }
 
@@ -99,8 +100,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 
 // rowCount returns the approximate row count for a table. Uses
 // pg_class.reltuples (cheap, stats-based) rather than a full COUNT(*).
-// Returns 0 if the table doesn't exist (fresh install may not have
-// all tables until features are first used).
+// Returns (0, nil) only if the table genuinely doesn't exist (pg_class
+// has no matching row); actual query errors are returned so callers can
+// distinguish a missing table from a connection failure.
 func rowCount(ctx context.Context, pool *pgxpool.Pool, table string) (int64, error) {
 	var n int64
 	err := pool.QueryRow(ctx, `
@@ -109,8 +111,10 @@ func rowCount(ctx context.Context, pool *pgxpool.Pool, table string) (int64, err
 		WHERE relname = $1 AND relkind = 'r'
 		LIMIT 1`, table).Scan(&n)
 	if err != nil {
-		// Table doesn't exist — treat as 0 rows, not an error.
-		return 0, nil
+		if err == pgx.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
 	}
 	return n, nil
 }
@@ -123,8 +127,9 @@ func (r *Reconciler) sampleGitFsck(ctx context.Context) int {
 		return 0
 	}
 	var allRepos []string
-	_ = filepath.Walk(r.reposPath, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(r.reposPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("walk error during git fsck sample")
 			return nil
 		}
 		if info.IsDir() && (filepath.Base(path) == ".git" || strings.HasSuffix(path, ".git")) {
@@ -133,6 +138,9 @@ func (r *Reconciler) sampleGitFsck(ctx context.Context) int {
 		}
 		return nil
 	})
+	if err != nil {
+		log.Warn().Err(err).Str("repos_path", r.reposPath).Msg("filepath.Walk failed")
+	}
 	if len(allRepos) == 0 {
 		return 0
 	}
@@ -156,7 +164,9 @@ func (r *Reconciler) sampleGitFsck(ctx context.Context) int {
 func gitFsck(ctx context.Context, repoPath string) bool {
 	out, err := execGitFsck(ctx, repoPath)
 	if err != nil {
-		_ = out
+		log.Warn().Err(err).Str("repo", repoPath).
+			Str("output", strings.TrimSpace(out)).
+			Msg("git fsck failed")
 		return false
 	}
 	return true
@@ -185,6 +195,3 @@ type cmdRunner interface {
 func newExecCmd(ctx context.Context, name string, args ...string) cmdRunner {
 	return exec.CommandContext(ctx, name, args...)
 }
-
-// strconv is used in formatting; keep import to avoid removal.
-var _ = strconv.Itoa

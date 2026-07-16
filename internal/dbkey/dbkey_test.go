@@ -1,6 +1,7 @@
 package dbkey
 
 import (
+	"context"
 	"testing"
 )
 
@@ -42,5 +43,12 @@ func TestDbKeyRegexMatchesLeadingSpaces(t *testing.T) {
 	}
 	if string(m[1]) != "mykey123" {
 		t.Errorf("got %q", m[1])
+	}
+}
+
+func TestFetchKeyEmptySSHHost(t *testing.T) {
+	_, err := fetchKey(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty ssh_host")
 	}
 }

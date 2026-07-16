@@ -51,7 +51,7 @@ func TestGenerateWithFailoverConfig(t *testing.T) {
 		Secondaries: []config.SiteConfig{
 			{Name: "s", ExternalURL: "https://s.example.com"},
 		},
-		Sync:      config.SyncConfig{ConsistencySamplePct: 0.05},
+		Sync: config.SyncConfig{ConsistencySamplePct: 0.05},
 		Failover: &config.FailoverConfig{
 			AutoFailover:        true,
 			QuorumRequired:      2,

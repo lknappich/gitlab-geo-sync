@@ -9,15 +9,14 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 )
 
 // Report summarizes sync lag and projected RTO.
 type Report struct {
-	PGLagP50       time.Duration
-	PGLagP99       time.Duration
-	LastSweepAge   time.Duration
-	DriftCount     int64
+	PGLagP50          time.Duration
+	PGLagP99          time.Duration
+	LastSweepAge      time.Duration
+	DriftCount        int64
 	ComponentsHealthy int
 	ComponentsTotal   int
 }
@@ -89,6 +88,3 @@ func (r *Report) Print(w io.Writer) {
 	fmt.Fprintf(w, "RTO Estimate: ~2-5 min (pg_ctl promote + gitlab-ctl restart)\n")
 	fmt.Fprintf(w, "\nNote: RPO for in-flight Sidekiq jobs is ~last dequeue time.\n")
 }
-
-// _ keeps the dto import for future metric parsing extensions.
-var _ = dto.MetricFamily{}

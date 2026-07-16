@@ -9,16 +9,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/config"
 	"github.com/anomalyco/gitlab-geo-sync/internal/dbkey"
 	"github.com/anomalyco/gitlab-geo-sync/internal/doctor"
 	"github.com/anomalyco/gitlab-geo-sync/internal/failover"
+	initcmd "github.com/anomalyco/gitlab-geo-sync/internal/initcmd"
 	"github.com/anomalyco/gitlab-geo-sync/internal/logging"
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/pgsetup"
-	initcmd "github.com/anomalyco/gitlab-geo-sync/internal/initcmd"
+	"github.com/anomalyco/gitlab-geo-sync/internal/readonly"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler/apivalidator"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler/consistency"
@@ -28,7 +30,6 @@ import (
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler/objectstorage"
 	pgreconciler "github.com/anomalyco/gitlab-geo-sync/internal/reconciler/postgres"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler/registry"
-	"github.com/anomalyco/gitlab-geo-sync/internal/readonly"
 	"github.com/anomalyco/gitlab-geo-sync/internal/runbook"
 	"github.com/anomalyco/gitlab-geo-sync/internal/sla"
 	"github.com/anomalyco/gitlab-geo-sync/internal/version"
@@ -197,8 +198,9 @@ func newServeCmd(g *globalFlags) *cobra.Command {
 			go func() { runner.Run(ctx); errCh <- nil }()
 
 			// Webhook receiver (optional).
+			var whServer *webhook.Server
 			if cfg.Webhook != nil {
-				whServer := buildWebhookServer(cfg, recs, g.dryRun)
+				whServer = buildWebhookServer(cfg, recs, g.dryRun)
 				go func() { errCh <- whServer.Start(ctx) }()
 			}
 
@@ -257,7 +259,11 @@ func buildReconcilers(ctx context.Context, cfg *config.Config, dryRun bool) ([]r
 	// Object storage.
 	switch cfg.Primary.ObjectStore.Backend {
 	case "s3":
-		osRec, err := objectstorage.New(ctx, cfg)
+		var secS3 *config.S3Config
+		if len(cfg.Secondaries) > 0 && cfg.Secondaries[0].ObjectStore.S3 != nil {
+			secS3 = cfg.Secondaries[0].ObjectStore.S3
+		}
+		osRec, err := objectstorage.New(ctx, cfg.Primary.ObjectStore.S3, secS3)
 		if err != nil {
 			for _, c := range cleanups {
 				c()
@@ -297,13 +303,24 @@ func buildReconcilers(ctx context.Context, cfg *config.Config, dryRun bool) ([]r
 }
 
 // buildWebhookServer creates a webhook receiver wired to trigger
-// immediate git fetch for the affected project.
+// immediate git fetch for the affected project. In fetch mode it calls
+// the gitfetch reconciler's per-project FetchProject; in rsync mode or
+// when no gitfetch reconciler is available, it logs and falls back to
+// the next sweep.
 func buildWebhookServer(cfg *config.Config, recs []reconciler.Reconciler, dryRun bool) *webhook.Server {
+	var fetcher *gitfetch.Reconciler
+	for _, r := range recs {
+		if gf, ok := r.(*gitfetch.Reconciler); ok {
+			fetcher = gf
+			break
+		}
+	}
 	trigger := func(ctx context.Context, projectPath, eventType string) error {
-		// In fetch mode, we'd call the gitfetch reconciler's per-project
-		// fetch here. For now, log it; the next sweep will pick it up.
-		// A full implementation would resolve projectPath → repoPath and
-		// call gitfetch.RepairRepo directly.
+		if fetcher != nil {
+			return fetcher.FetchProject(ctx, projectPath)
+		}
+		log.Info().Str("project", projectPath).Str("event", eventType).
+			Msg("webhook received but no gitfetch reconciler; next sweep will sync")
 		return nil
 	}
 	mgr := webhook.NewTriggerManager(trigger)
@@ -341,7 +358,10 @@ func newPGSetupCmd(g *globalFlags) *cobra.Command {
 			if dataDir == "" {
 				return fmt.Errorf("--data-dir is required")
 			}
-			return pgsetup.Run(context.Background(), pgsetup.Options{
+			ctx, cancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+			return pgsetup.Run(ctx, pgsetup.Options{
 				PrimaryDSN: cfg.Primary.Postgres.ReplicationDSN(),
 				DataDir:    dataDir,
 				SlotName:   sc.Postgres.SlotName,
@@ -364,7 +384,10 @@ func newPGStatusCmd(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 10*time.Second)
 			defer cancel()
 			pgRec, err := pgreconciler.New(ctx, cfg)
 			if err != nil {
@@ -395,7 +418,10 @@ func newSyncCmd(g *globalFlags) *cobra.Command {
 				return err
 			}
 			metrics.Register(metrics.Registry)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 5*time.Minute)
 			defer cancel()
 			recs, cleanup, err := buildReconcilers(ctx, cfg, g.dryRun)
 			if err != nil {
@@ -433,7 +459,10 @@ func newDbKeyCmd(g *globalFlags) *cobra.Command {
 			if len(cfg.Secondaries) == 0 {
 				return fmt.Errorf("no secondaries configured")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 30*time.Second)
 			defer cancel()
 			for _, s := range cfg.Secondaries {
 				fmt.Printf("checking %s ... ", s.Name)
@@ -473,7 +502,10 @@ func newFailoverCmd(g *globalFlags) *cobra.Command {
 			if !force && !g.dryRun {
 				return fmt.Errorf("failover requires --yes or --dry-run")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 10*time.Minute)
 			defer cancel()
 			fc := failover.New(cfg, g.dryRun)
 			return fc.Promote(ctx, secondaryName)
@@ -504,7 +536,10 @@ func newAdoptCmd(g *globalFlags) *cobra.Command {
 			if oldPrimarySSH == "" {
 				return fmt.Errorf("--old-primary-ssh is required (or set primary.ssh_host in config)")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 30*time.Minute)
 			defer cancel()
 			fc := failover.New(cfg, g.dryRun)
 			return fc.AdoptAsSecondary(ctx, oldPrimarySSH)
@@ -543,7 +578,10 @@ func newSLACmd(g *globalFlags) *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			metrics.Register(metrics.Registry)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 10*time.Second)
 			defer cancel()
 			return sla.Generate(ctx, os.Stdout)
 		},
@@ -573,12 +611,15 @@ func newDoctorCmd(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			sigCtx, sigCancel := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, 2*time.Minute)
 			defer cancel()
 			result := doctor.Run(ctx, cfg)
 			result.Print()
 			if result.Fail > 0 {
-				os.Exit(1)
+				return fmt.Errorf("doctor: %d checks failed", result.Fail)
 			}
 			return nil
 		},

@@ -20,10 +20,10 @@ const name = "git_rsync"
 
 // Reconciler rsyncs the primary git-data tree to the secondary.
 type Reconciler struct {
-	sshHost    string // primary host:port
-	srcPath    string // primary repos path
-	dstPath    string // secondary repos path
-	dryRun     bool
+	sshHost string // primary host:port
+	srcPath string // primary repos path
+	dstPath string // secondary repos path
+	dryRun  bool
 }
 
 // New creates a git rsync reconciler from a primary/secondary config pair.

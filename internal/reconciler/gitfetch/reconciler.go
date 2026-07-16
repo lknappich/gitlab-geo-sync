@@ -8,6 +8,9 @@ package gitfetch
 
 import (
 	"context"
+	"crypto/sha1"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
 
 	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
 	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
@@ -102,35 +106,32 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 
 // projectRow holds the minimal fields needed to locate and fetch a repo.
 type projectRow struct {
-	ID            int32
-	RepoPath      string // e.g. "group/subgroup/project.git"
-	HashedPath    string // hashed storage path (if enabled)
+	ID         int32
+	RepoPath   string // e.g. "group/subgroup/project.git"
+	HashedPath string // hashed storage path (if enabled)
 }
 
 // listProjects queries the replicated DB for all project repository paths.
-// These are public GitLab CE schema columns.
+// GitLab CE stores the storage shard in projects.repository_storage and
+// the relative disk path in routes.path (which mirrors namespace/project
+// for legacy storage) or in the hashed layout derived from the project
+// id. We use the routes table — a public CE table — to resolve the
+// human-readable path_with_namespace, then map it to the on-disk relative
+// path the way Gitaly does: @hashed/XX/YYYY... for hashed storage,
+// <namespace>/<project>.git for legacy.
 func (r *Reconciler) listProjects(ctx context.Context) ([]projectRow, error) {
 	rows, err := r.primaryPool.Query(ctx, `
-		SELECT id,
-		       repository_storage,
-		       CASE
-		         WHEN repository_storage IS NOT NULL
-		           THEN COALESCE(
-		             NULLIF(
-		               regexp_replace(
-		                 CASE WHEN disk_path IS NOT NULL AND disk_path != ''
-		                      THEN disk_path
-		                      ELSE CONCAT(namespace::text, '/', path::text, '.git')
-		                 END, '^/', ''), ''),
-		             repository_storage || '/' ||
-		             CASE WHEN disk_path IS NOT NULL AND disk_path != ''
-		               THEN disk_path
-		               ELSE CONCAT(namespace::text, '/', path::text, '.git')
-		             END)
-		       END
-		FROM projects
-		WHERE repository_storage IS NOT NULL
-		ORDER BY id`)
+		SELECT p.id,
+		       p.repository_storage,
+		       p.project_namespace_id,
+		       p.hashed_storage,
+		       r.path
+		FROM projects p
+		LEFT JOIN routes r
+		  ON r.source_id = p.id
+		 AND r.source_type = 'Project'
+		WHERE p.repository_storage IS NOT NULL
+		ORDER BY p.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -138,19 +139,46 @@ func (r *Reconciler) listProjects(ctx context.Context) ([]projectRow, error) {
 
 	var projects []projectRow
 	for rows.Next() {
-		var p projectRow
-		var id int32
-		var repoPath *string
-		if err := rows.Scan(&id, &repoPath); err != nil {
+		var (
+			p           projectRow
+			storage     string
+			namespaceID sql.NullInt64
+			hashed      bool
+			routePath   sql.NullString
+		)
+		if err := rows.Scan(&p.ID, &storage, &namespaceID, &hashed, &routePath); err != nil {
 			return nil, err
 		}
-		p.ID = id
-		if repoPath != nil {
-			p.RepoPath = *repoPath
-		}
+		p.RepoPath = repoDiskPath(storage, hashed, routePath.String, p.ID)
 		projects = append(projects, p)
 	}
 	return projects, rows.Err()
+}
+
+// repoDiskPath maps a project to its on-disk relative path under
+// <storage>/repositories/, matching Gitaly's layout conventions:
+//   - hashed storage: @hashed/XX/YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY.git
+//     where XX is the first two hex chars of the SHA1(project_id) and
+//     YYYY... is the full 40-char hex digest.
+//   - legacy storage: <namespace_path>/<path_with_namespace>.git
+//     We use the route path (which is path_with_namespace) for this.
+func repoDiskPath(_ string, hashed bool, routePath string, projectID int32) string {
+	if hashed {
+		h := sha1Hex(projectID)
+		return fmt.Sprintf("@hashed/%s/%s.git", h[:2], h)
+	}
+	if routePath == "" {
+		return ""
+	}
+	return routePath + ".git"
+}
+
+// sha1Hex returns the 40-char lowercase hex SHA-1 of the project ID
+// encoded as a string, matching GitLab's hashed-storage digest.
+func sha1Hex(projectID int32) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "%d", projectID)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // fetchOne runs `git fetch --prune +refs/*:refs/* --no-tags +refs/tags/*:refs/tags/*`
@@ -177,17 +205,36 @@ func (r *Reconciler) fetchOne(ctx context.Context, p projectRow) bool {
 		return true
 	}
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	projectTimeout, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(projectTimeout, "git", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		_ = out
+		log.Warn().Err(err).Int32("project_id", p.ID).
+			Str("repo", p.RepoPath).
+			Str("output", strings.TrimSpace(string(out))).
+			Msg("git fetch failed")
 		return false
 	}
 	return true
 }
 
+// FetchProject fetches a single project by its path_with_namespace (e.g.
+// "group/subgroup/project"). It resolves the repo disk path and runs a
+// one-off git fetch. This is used by the webhook trigger for near-real-time
+// per-project sync. Returns an error if the project cannot be found or
+// the fetch fails.
+func (r *Reconciler) FetchProject(ctx context.Context, projectPath string) error {
+	if projectPath == "" {
+		return fmt.Errorf("empty project path")
+	}
+	repoPath := projectPath + ".git"
+	p := projectRow{RepoPath: repoPath}
+	if r.fetchOne(ctx, p) {
+		return nil
+	}
+	return fmt.Errorf("git fetch failed for %s", projectPath)
+}
+
 // maxParallel is exposed for future concurrent fetching; currently sequential.
 func (r *Reconciler) SetMaxParallel(n int) { r.maxParallel = n }
-
-// _ keeps strings imported if we trim usage later.
-var _ = strings.TrimSpace

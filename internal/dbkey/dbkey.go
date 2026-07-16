@@ -45,33 +45,40 @@ func fetchKey(ctx context.Context, sshHost string) (string, error) {
 		return "", fmt.Errorf("ssh_host not configured")
 	}
 
-	// Try without sudo first (file may be group-readable), then with sudo.
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-o", "StrictHostKeyChecking=accept-new",
-		sshHost,
-		"grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep \"gitlab_rails\\['db_key_base'\\]\" /etc/gitlab/gitlab.rb 2>/dev/null || sudo grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || true",
-	)
-	out, err := cmd.CombinedOutput()
+	key, err := tryFetchKey(ctx, sshHost, true)
 	if err != nil {
-		// sudo might need a password; retry without sudo
-		cmd2 := exec.CommandContext(ctx, "ssh",
-			"-o", "StrictHostKeyChecking=accept-new",
-			sshHost,
-			"grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep \"gitlab_rails\\['db_key_base'\\]\" /etc/gitlab/gitlab.rb 2>/dev/null || true",
-		)
-		out, err = cmd2.CombinedOutput()
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		key, err = tryFetchKey(ctx, sshHost, false)
 		if err != nil {
 			return "", fmt.Errorf("ssh %s: %w", sshHost, err)
 		}
 	}
-	m := dbKeyRe.FindSubmatch(out)
+	m := dbKeyRe.FindSubmatch([]byte(key))
 	if m == nil {
-		// Try the YAML format (db_key_base: <key>)
 		yamlRe := regexp.MustCompile(`db_key_base:\s*['"]?([A-Za-z0-9_-]+)`)
-		m = yamlRe.FindSubmatch(out)
+		m = yamlRe.FindSubmatch([]byte(key))
 	}
 	if m == nil {
 		return "", fmt.Errorf("db_key_base not found in secrets.yml or gitlab.rb on %s", sshHost)
 	}
 	return strings.TrimSpace(string(m[1])), nil
+}
+
+func tryFetchKey(ctx context.Context, sshHost string, withSudo bool) (string, error) {
+	cmd := "grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep \"gitlab_rails\\['db_key_base'\\]\" /etc/gitlab/gitlab.rb 2>/dev/null || true"
+	if withSudo {
+		cmd = "sudo grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || " + cmd
+	}
+	c := exec.CommandContext(ctx, "ssh",
+		"-o", "StrictHostKeyChecking=accept-new",
+		sshHost,
+		cmd,
+	)
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

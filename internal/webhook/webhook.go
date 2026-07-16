@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +27,7 @@ type Server struct {
 	trigger     TriggerFunc
 	mux         *http.ServeMux
 	srv         *http.Server
+	ctx         context.Context
 }
 
 // TriggerFunc is called when a webhook is received. It receives the
@@ -53,6 +53,7 @@ func NewServer(addr, secretToken string, trigger TriggerFunc) *Server {
 
 // Start blocks until ctx is cancelled or the server errors.
 func (s *Server) Start(ctx context.Context) error {
+	s.ctx = ctx
 	s.srv = &http.Server{Addr: s.addr, Handler: s.mux}
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.srv.ListenAndServe() }()
@@ -103,7 +104,11 @@ func (s *Server) handleWebhook(w http.ResponseWriter, req *http.Request) {
 
 	// Trigger sync asynchronously so we respond to GitLab quickly.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		parent := s.ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 		defer cancel()
 		start := time.Now()
 		if err := s.trigger(ctx, projectPath, eventType); err != nil {
@@ -146,9 +151,9 @@ func extractProjectPath(body []byte) (string, error) {
 // we don't run multiple concurrent fetches for the same repo during a
 // push burst.
 type TriggerManager struct {
-	mu       sync.Mutex
-	pending  map[string]context.CancelFunc
-	trigger  TriggerFunc
+	mu      sync.Mutex
+	pending map[string]context.CancelFunc
+	trigger TriggerFunc
 }
 
 // NewTriggerManager wraps a TriggerFunc with per-project debouncing.
@@ -185,7 +190,3 @@ func (m *TriggerManager) Trigger(ctx context.Context, projectPath, eventType str
 
 	return m.trigger(ctx2, projectPath, eventType)
 }
-
-// hex is used for potential HMAC-SHA256 verification (GitLab also supports
-// a token-based approach which we use above; this is kept for reference).
-var _ = strings.TrimSpace

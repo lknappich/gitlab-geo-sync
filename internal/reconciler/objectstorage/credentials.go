@@ -1,8 +1,6 @@
 package objectstorage
 
 import (
-	"context"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 
@@ -17,7 +15,3 @@ func credentialsFromConfig(s3cfg *config.S3Config) aws.CredentialsProvider {
 		s3cfg.AccessKey, s3cfg.SecretKey, "",
 	)
 }
-
-// noopCtx is used to satisfy the CredentialsProvider interface if we
-// ever need context-aware credential refresh. Currently static.
-var _ context.Context = context.Background()

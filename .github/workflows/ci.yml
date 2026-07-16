@@ -19,6 +19,14 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go build ./...
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "gofmt found issues in the following files:"
+            echo "$out"
+            exit 1
+          fi
       - run: go test -race -coverprofile=coverage.txt ./...
       - uses: actions/upload-artifact@v4
         with:

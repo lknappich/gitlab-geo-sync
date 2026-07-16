@@ -33,12 +33,12 @@ type Answers struct {
 	SecondaryReposPath string
 
 	ObjectStorageBackend string
-	S3Region            string
-	S3PrimaryBucket     string
-	S3ReplicaBucket     string
-	S3Endpoint          string
+	S3Region             string
+	S3PrimaryBucket      string
+	S3ReplicaBucket      string
+	S3Endpoint           string
 
-	FailoverEnabled bool
+	FailoverEnabled   bool
 	ReadOnlySecondary bool
 }
 

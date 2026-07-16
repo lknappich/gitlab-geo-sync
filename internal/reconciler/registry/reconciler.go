@@ -26,11 +26,11 @@ const name = "registry"
 // Reconciler compares registry contents between primary and secondary
 // via the Docker Registry HTTP API v2.
 type Reconciler struct {
-	primaryURL    string
-	secondaryURL  string
-	primaryClient *http.Client
+	primaryURL      string
+	secondaryURL    string
+	primaryClient   *http.Client
 	secondaryClient *http.Client
-	dryRun        bool
+	dryRun          bool
 }
 
 // New creates a registry reconciler from the primary/secondary external URLs.
@@ -44,8 +44,8 @@ func New(primary, secondary *config.SiteConfig, dryRun bool) *Reconciler {
 
 	timeout := 30 * time.Second
 	return &Reconciler{
-		primaryURL:    primaryURL,
-		secondaryURL:  secondaryURL,
+		primaryURL:      primaryURL,
+		secondaryURL:    secondaryURL,
 		primaryClient:   &http.Client{Timeout: timeout},
 		secondaryClient: &http.Client{Timeout: timeout},
 		dryRun:          dryRun,

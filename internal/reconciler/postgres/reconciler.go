@@ -20,7 +20,7 @@ const name = "postgres"
 
 // Reconciler implements reconciler.Reconciler for PostgreSQL streaming.
 type Reconciler struct {
-	primary    *pgxpool.Pool
+	primary     *pgxpool.Pool
 	secondaries []secondaryConn
 }
 
@@ -130,11 +130,4 @@ func (r *Reconciler) SecondaryPool(name string) *pgxpool.Pool {
 		}
 	}
 	return nil
-}
-
-func max(a, b time.Duration) time.Duration {
-	if a > b {
-		return a
-	}
-	return b
 }
