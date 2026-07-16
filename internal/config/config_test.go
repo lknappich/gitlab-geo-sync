@@ -292,6 +292,59 @@ func TestDSNSSLCertPaths(t *testing.T) {
 	}
 }
 
+func TestEnvExpansionDoesNotInjectYAMLKeys(t *testing.T) {
+	t.Setenv("PG_REPL_PASSWORD", "replpass")
+	t.Setenv("PG_CTRL_PASSWORD", "ctrlpass")
+	t.Setenv("SEC_REPL_PASSWORD", "secpass")
+	t.Setenv("S3_AK", "AKIAEXAMPLE")
+	t.Setenv("S3_SK", "secretexample")
+	t.Setenv("MALICIOUS_VALUE", "foo\npassword: attacker_key")
+
+	yaml := `
+primary:
+  name: p
+  external_url: https://p.example.com
+  postgres:
+    host: h
+    port: 5432
+    db: d
+    user: u
+    password: ${MALICIOUS_VALUE}
+    replication_user: r
+    replication_password: ${PG_REPL_PASSWORD}
+  git:
+    mode: rsync
+    repos_path: /r
+  object_storage:
+    backend: fs
+secondaries:
+  - name: s
+    postgres:
+      host: h
+      port: 5432
+      db: d
+      user: u
+      replication_user: r
+      replication_password: ${SEC_REPL_PASSWORD}
+    git:
+      mode: rsync
+      repos_path: /r
+    object_storage:
+      backend: fs
+`
+	path := writeTempConfig(t, yaml)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Primary.Postgres.Password != "foo\npassword: attacker_key" {
+		t.Errorf("expected multi-line value to be opaque string, got %q", cfg.Primary.Postgres.Password)
+	}
+	if cfg.Primary.Postgres.ReplicationPassword != "replpass" {
+		t.Errorf("expected replpass, got %q", cfg.Primary.Postgres.ReplicationPassword)
+	}
+}
+
 func TestQuoteLibPQValue(t *testing.T) {
 	tests := []struct {
 		in, want string

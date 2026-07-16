@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -218,37 +219,37 @@ type SSHConfig struct {
 	StrictHostKeyChecking string `yaml:"strict_host_key_checking,omitempty"`
 }
 
-// Load reads and validates a config file, expanding ${ENV} placeholders
-// and enforcing that all fields tagged env:"required" are non-empty.
+// Load reads and validates a config file. ${ENV_VAR} placeholders in
+// string fields are resolved AFTER YAML parsing so env values are
+// treated as opaque strings (never re-parsed as YAML), preventing
+// injection of additional keys via newlines or YAML metacharacters.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	expanded, err := ExpandEnv(raw)
-	if err != nil {
-		return nil, err
-	}
 	var c Config
-	dec := yaml.NewDecoder(strings.NewReader(string(expanded)))
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	// Stamp an instance ID so parallel reconcilers are disambiguatable.
+	if err := resolveEnvInStruct(&c); err != nil {
+		return nil, err
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
-// ExpandEnv replaces ${VAR} placeholders in raw YAML with the corresponding
-// environment variable value. If a referenced variable is unset or empty,
-// returns an error naming the variable. Literal secret values are NOT
-// supported; the env expansion is the only mechanism.
+// envRefRe matches ${VAR} placeholders in string values.
 var envRefRe = regexp.MustCompile(`\$\{([A-Z_][A-Z0-9_]*)\}`)
 
-// ExpandEnv expands ${VAR} references in raw bytes.
+// ExpandEnv replaces ${VAR} placeholders in raw YAML with the corresponding
+// environment variable value. Deprecated: env resolution now happens after
+// YAML parse via resolveEnvInStruct. Kept for external callers that may
+// depend on it.
 func ExpandEnv(raw []byte) ([]byte, error) {
 	var missing []string
 	out := envRefRe.ReplaceAllFunc(raw, func(m []byte) []byte {
@@ -265,6 +266,70 @@ func ExpandEnv(raw []byte) ([]byte, error) {
 			strings.Join(missing, ", "))
 	}
 	return out, nil
+}
+
+// resolveEnvInStruct walks the Config struct via reflection and expands
+// ${VAR} references in every string field. This is safe because env
+// values are assigned as opaque Go strings — they are never re-parsed
+// as YAML, so newlines or YAML metacharacters in env values cannot
+// inject additional keys or alter document structure.
+func resolveEnvInStruct(c *Config) error {
+	return resolveEnv(reflect.ValueOf(c).Elem())
+}
+
+func resolveEnv(v reflect.Value) error {
+	switch v.Kind() {
+	case reflect.String:
+		expanded, err := expandEnvString(v.String())
+		if err != nil {
+			return err
+		}
+		v.SetString(expanded)
+	case reflect.Ptr:
+		if !v.IsNil() {
+			return resolveEnv(v.Elem())
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			if err := resolveEnv(v.Index(i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		for _, key := range v.MapKeys() {
+			if err := resolveEnv(v.MapIndex(key)); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if err := resolveEnv(v.Field(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func expandEnvString(s string) (string, error) {
+	if !strings.Contains(s, "${") {
+		return s, nil
+	}
+	var missing []string
+	result := envRefRe.ReplaceAllStringFunc(s, func(m string) string {
+		name := envRefRe.FindStringSubmatch(m)[1]
+		v, ok := os.LookupEnv(name)
+		if !ok || v == "" {
+			missing = append(missing, name)
+			return m
+		}
+		return v
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("environment variables referenced but not set: %s",
+			strings.Join(missing, ", "))
+	}
+	return result, nil
 }
 
 // Validate performs semantic validation beyond YAML parsing.
