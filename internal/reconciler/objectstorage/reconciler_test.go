@@ -2,6 +2,7 @@ package objectstorage
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -16,22 +17,6 @@ func TestNewRejectsNilPrimary(t *testing.T) {
 	if !strings.Contains(err.Error(), "primary.object_storage.s3 is required") {
 		t.Errorf("err = %v", err)
 	}
-}
-
-func TestNewRejectsInvalidRegion(t *testing.T) {
-	// Force an invalid AWS config by using an empty region with credentials.
-	// LoadDefaultConfig may succeed with empty region (defaults), so this
-	// test primarily exercises the error path when region/sts fail. We just
-	// ensure no panic.
-	_, err := New(context.Background(), &config.S3Config{
-		Region:        "us-east-1",
-		PrimaryBucket: "p",
-		ReplicaBucket: "r",
-		AccessKey:     "AK",
-		SecretKey:     "SK",
-	}, nil)
-	// Depending on environment this may or may not error; just ensure no panic.
-	_ = err
 }
 
 func TestName(t *testing.T) {
@@ -76,17 +61,98 @@ func TestPtrDereferences(t *testing.T) {
 	}
 }
 
-func TestReconcileDriftDirection(t *testing.T) {
-	// Reconcile requires real S3 clients; skip the body test and only
-	// validate that Result zero-value is OK=false when constructed empty.
-	r := &Reconciler{
-		primaryBucket: "p",
-		replicaBucket: "r",
-	}
-	if r.primaryBucket != "p" {
-		t.Error("bucket not set")
+// --- Mock bucketLister ---
+
+type mockLister struct {
+	count int64
+	size  int64
+	err   error
+}
+
+func (m *mockLister) stats(ctx context.Context) (int64, int64, error) {
+	return m.count, m.size, m.err
+}
+
+func TestReconcileMatch(t *testing.T) {
+	r := newReconcilerWithListers(
+		&mockLister{count: 10, size: 1024},
+		&mockLister{count: 10, size: 1024},
+		0,
+	)
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK, got: %s", res.Detail)
 	}
 }
 
-// silence unused import warning if errors package becomes unused later.
-// (kept for future Reconcile-drift direction tests)
+func TestReconcileDrift(t *testing.T) {
+	r := newReconcilerWithListers(
+		&mockLister{count: 100, size: 1024},
+		&mockLister{count: 99, size: 1024},
+		0,
+	)
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on drift")
+	}
+	if res.Remaining != 1 {
+		t.Errorf("Remaining = %d, want 1", res.Remaining)
+	}
+}
+
+func TestReconcileDriftNegativeDelta(t *testing.T) {
+	r := newReconcilerWithListers(
+		&mockLister{count: 50, size: 100},
+		&mockLister{count: 55, size: 100},
+		0,
+	)
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on drift")
+	}
+	if res.Remaining != 5 {
+		t.Errorf("Remaining = %d, want 5", res.Remaining)
+	}
+}
+
+func TestReconcilePrimaryError(t *testing.T) {
+	r := newReconcilerWithListers(
+		&mockLister{err: errors.New("access denied")},
+		&mockLister{count: 10, size: 100},
+		0,
+	)
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on primary error")
+	}
+	if !strings.Contains(res.Detail, "primary list") {
+		t.Errorf("Detail = %q", res.Detail)
+	}
+}
+
+func TestReconcileReplicaError(t *testing.T) {
+	r := newReconcilerWithListers(
+		&mockLister{count: 10, size: 100},
+		&mockLister{err: errors.New("access denied")},
+		0,
+	)
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on replica error")
+	}
+	if !strings.Contains(res.Detail, "replica list") {
+		t.Errorf("Detail = %q", res.Detail)
+	}
+}
+
+func TestReconcileSizeDrift(t *testing.T) {
+	r := newReconcilerWithListers(
+		&mockLister{count: 10, size: 100},
+		&mockLister{count: 10, size: 90},
+		0,
+	)
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on size drift")
+	}
+}

@@ -20,13 +20,27 @@ import (
 
 const name = "object_storage"
 
+// bucketLister is the minimal S3 surface this reconciler needs. Both
+// *s3.Client (via listerAdapter) and a test mock satisfy it.
+type bucketLister interface {
+	stats(ctx context.Context) (count, size int64, err error)
+}
+
+// listerAdapter wraps an *s3.Client + bucket name and satisfies bucketLister.
+type listerAdapter struct {
+	client *s3.Client
+	bucket string
+}
+
+func (a *listerAdapter) stats(ctx context.Context) (int64, int64, error) {
+	return bucketStats(ctx, a.client, a.bucket)
+}
+
 // Reconciler verifies S3 bucket parity between primary and replica.
 type Reconciler struct {
-	primaryClient *s3.Client
-	replicaClient *s3.Client
-	primaryBucket string
-	replicaBucket string
-	lagThreshold  time.Duration
+	primary      bucketLister
+	replica      bucketLister
+	lagThreshold time.Duration
 }
 
 // New creates an S3 object-storage reconciler. The primary client is built
@@ -51,12 +65,16 @@ func New(ctx context.Context, primary, secondary *config.S3Config) (*Reconciler,
 		return nil, fmt.Errorf("replica s3 client: %w", err)
 	}
 	return &Reconciler{
-		primaryClient: pClient,
-		replicaClient: rClient,
-		primaryBucket: pBucket,
-		replicaBucket: rBucket,
-		lagThreshold:  primary.ReplicationLag,
+		primary:      &listerAdapter{client: pClient, bucket: pBucket},
+		replica:      &listerAdapter{client: rClient, bucket: rBucket},
+		lagThreshold: primary.ReplicationLag,
 	}, nil
+}
+
+// newReconcilerWithListers builds a Reconciler from already-constructed
+// listers — used by tests to inject mocks.
+func newReconcilerWithListers(primary, replica bucketLister, lag time.Duration) *Reconciler {
+	return &Reconciler{primary: primary, replica: replica, lagThreshold: lag}
 }
 
 func newS3Client(ctx context.Context, s3cfg *config.S3Config, bucket string) (*s3.Client, string, error) {
@@ -85,7 +103,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 	var pCount, pSize int64
 	err := reconciler.Retry(ctx, name, 3, 2*time.Second, 10*time.Second, func() error {
 		var e error
-		pCount, pSize, e = bucketStats(ctx, r.primaryClient, r.primaryBucket)
+		pCount, pSize, e = r.primary.stats(ctx)
 		return e
 	})
 	if err != nil {
@@ -95,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 	var rCount, rSize int64
 	err = reconciler.Retry(ctx, name, 3, 2*time.Second, 10*time.Second, func() error {
 		var e error
-		rCount, rSize, e = bucketStats(ctx, r.replicaClient, r.replicaBucket)
+		rCount, rSize, e = r.replica.stats(ctx)
 		return e
 	})
 	if err != nil {
