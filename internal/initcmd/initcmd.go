@@ -44,7 +44,13 @@ type Answers struct {
 
 // Run prompts the user for each field and writes a config.yaml.
 func Run(w io.Writer) (*Answers, error) {
-	reader := bufio.NewReader(os.Stdin)
+	return RunWithInput(os.Stdin, w)
+}
+
+// RunWithInput is like Run but reads from the provided reader instead
+// of os.Stdin. Used by tests to inject canned input.
+func RunWithInput(r io.Reader, w io.Writer) (*Answers, error) {
+	reader := bufio.NewReader(r)
 	a := &Answers{}
 
 	out := func(format string, args ...any) {

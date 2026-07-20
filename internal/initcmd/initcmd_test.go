@@ -211,3 +211,55 @@ func TestConfirmCaseInsensitive(t *testing.T) {
 		t.Error("'YES' should return true (case-insensitive)")
 	}
 }
+
+func TestRunInteractive(t *testing.T) {
+	// Simulate user pressing enter for every prompt (accepting defaults).
+	input := strings.Repeat("\n", 20)
+	_, err := RunWithInput(strings.NewReader(input), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestRunCustomInput(t *testing.T) {
+	// Provide custom values for each prompt.
+	input := strings.NewReader("myprimary\nhttps://my.gitlab.com\nmyhost:22\n10.0.0.1\n5432\nmydb\nmyuser\nmyrepl\nmyslot\nfetch\n/my/repos\nmysecondary\nhttps://my.secondary.com\nmysec:22\n10.1.0.1\n5432\n/my/repos\ns3\nus-east-1\nmybucket\nmyreplica\nhttp://minio:9000\nn\ny\n")
+	var w bytes.Buffer
+	a, err := RunWithInput(input, &w)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if a.PrimaryName != "myprimary" {
+		t.Errorf("PrimaryName = %q", a.PrimaryName)
+	}
+	if a.PrimaryURL != "https://my.gitlab.com" {
+		t.Errorf("PrimaryURL = %q", a.PrimaryURL)
+	}
+	if a.PrimaryGitMode != "fetch" {
+		t.Errorf("PrimaryGitMode = %q", a.PrimaryGitMode)
+	}
+	if a.ObjectStorageBackend != "s3" {
+		t.Errorf("ObjectStorageBackend = %q", a.ObjectStorageBackend)
+	}
+	if !a.FailoverEnabled {
+		t.Error("FailoverEnabled should be true (answered y)")
+	}
+	if a.ReadOnlySecondary {
+		t.Error("ReadOnlySecondary should be false (answered n)")
+	}
+}
+
+func TestRunFSBackendSkipsS3Prompts(t *testing.T) {
+	input := strings.NewReader("p\nhttps://p.com\np:22\n10.0.0.1\n5432\ndb\nuser\nrepl\n\nrsync\n/repos\ns\nhttps://s.com\ns:22\n10.1.0.1\n5432\n/repos\nfs\nn\nn\n")
+	var w bytes.Buffer
+	a, err := RunWithInput(input, &w)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if a.ObjectStorageBackend != "fs" {
+		t.Errorf("ObjectStorageBackend = %q, want fs", a.ObjectStorageBackend)
+	}
+	if a.S3Region != "" {
+		t.Errorf("S3Region should be empty for fs backend: %q", a.S3Region)
+	}
+}

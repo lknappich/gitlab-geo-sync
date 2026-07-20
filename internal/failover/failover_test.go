@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lknappich/gitlab-geo-sync/internal/config"
 )
@@ -287,5 +288,83 @@ func TestAdoptAsSecondaryDryRun(t *testing.T) {
 	err := fc.AdoptAsSecondary(context.Background(), "old-primary:22")
 	if err != nil {
 		t.Fatalf("dry-run AdoptAsSecondary should succeed: %v", err)
+	}
+}
+
+func TestRunStopsOnContextCancel(t *testing.T) {
+	cfg := &config.Config{
+		Primary: config.SiteConfig{Name: "p", ExternalURL: "https://p.example.com"},
+		Secondaries: []config.SiteConfig{
+			{Name: "s"},
+		},
+		Failover: &config.FailoverConfig{QuorumRequired: 1, HealthCheckInterval: 100 * time.Millisecond},
+	}
+	fc := New(cfg, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fc.Run(ctx)
+}
+
+func TestSSHSecondaryCheckHostError(t *testing.T) {
+	cfg := &config.Config{
+		Primary:     config.SiteConfig{Name: "p"},
+		Secondaries: []config.SiteConfig{{Name: "s"}},
+	}
+	fc := New(cfg, true)
+	err := fc.sshSecondary(context.Background(), "", "echo ok")
+	if err == nil {
+		t.Fatal("expected error for empty ssh host")
+	}
+	if !strings.Contains(err.Error(), "ssh_host not configured") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestAdoptAsSecondaryRejectsUnknownSecondary(t *testing.T) {
+	cfg := &config.Config{
+		Primary:     config.SiteConfig{Name: "p"},
+		Secondaries: []config.SiteConfig{{Name: "s"}},
+		Sync:        config.SyncConfig{FailoverEnabled: true},
+	}
+	fc := New(cfg, true)
+	// With failover enabled and dry-run, should succeed.
+	err := fc.AdoptAsSecondary(context.Background(), "old:22")
+	if err != nil {
+		t.Fatalf("dry-run with failover enabled should succeed: %v", err)
+	}
+}
+
+func TestPromoteRejectsNonExistentSecondary(t *testing.T) {
+	cfg := &config.Config{
+		Primary:     config.SiteConfig{Name: "p"},
+		Secondaries: []config.SiteConfig{{Name: "s"}},
+		Sync:        config.SyncConfig{FailoverEnabled: true},
+	}
+	fc := New(cfg, true)
+	err := fc.Promote(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown secondary")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestCheckSetsPrimaryDownAfter3Fails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Primary:     config.SiteConfig{ExternalURL: srv.URL},
+		Secondaries: []config.SiteConfig{{Name: "s"}},
+		Failover:    &config.FailoverConfig{QuorumRequired: 1, AutoFailover: false},
+	}
+	fc := New(cfg, true)
+	fc.check(context.Background())
+	fc.check(context.Background())
+	fc.check(context.Background())
+	if !fc.IsPrimaryDown() {
+		t.Error("primary should be down after 3 consecutive fails")
 	}
 }

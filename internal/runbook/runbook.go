@@ -14,16 +14,12 @@ import (
 // Generate writes a Markdown runbook to w based on cfg.
 func Generate(w io.Writer, cfg *config.Config) error {
 	tmpl, err := template.New("runbook").Funcs(template.FuncMap{
-		"mul": func(a, b float64) float64 { return a * b },
 		"pct": func(v float64) string { return fmt.Sprintf("%.1f%%", v*100) },
 		"firstSecondaryName": func(c *config.Config) string {
 			if len(c.Secondaries) > 0 {
 				return c.Secondaries[0].Name
 			}
 			return ""
-		},
-		"failoverCfg": func(c *config.Config) *config.FailoverConfig {
-			return c.Failover
 		},
 	}).Parse(runbookTmpl)
 	if err != nil {

@@ -75,3 +75,59 @@ func TestGenerateWithFailoverConfig(t *testing.T) {
 func contains(s, substr string) bool {
 	return bytes.Contains([]byte(s), []byte(substr))
 }
+
+func TestGenerateNoSecondaries(t *testing.T) {
+	cfg := &config.Config{
+		Primary: config.SiteConfig{Name: "p", ExternalURL: "https://p.example.com"},
+		Sync:    config.SyncConfig{ConsistencySamplePct: 0.01},
+		Metrics: config.MetricsConfig{Addr: ":9101"},
+	}
+	var buf bytes.Buffer
+	if err := Generate(&buf, cfg); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	out := buf.String()
+	if !contains(out, "p") {
+		t.Error("runbook missing primary name")
+	}
+}
+
+func TestGenerateMultipleSecondaries(t *testing.T) {
+	cfg := &config.Config{
+		Primary: config.SiteConfig{Name: "p", ExternalURL: "https://p.example.com"},
+		Secondaries: []config.SiteConfig{
+			{Name: "s1", ExternalURL: "https://s1.example.com"},
+			{Name: "s2", ExternalURL: "https://s2.example.com"},
+			{Name: "s3", ExternalURL: "https://s3.example.com"},
+		},
+		Sync:    config.SyncConfig{ConsistencySamplePct: 0.01},
+		Metrics: config.MetricsConfig{Addr: ":9101"},
+	}
+	var buf bytes.Buffer
+	if err := Generate(&buf, cfg); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	out := buf.String()
+	if !contains(out, "s1") || !contains(out, "s2") || !contains(out, "s3") {
+		t.Error("runbook missing secondary names")
+	}
+}
+
+func TestGenerateWithFailoverDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Primary: config.SiteConfig{Name: "p", ExternalURL: "https://p.example.com"},
+		Secondaries: []config.SiteConfig{
+			{Name: "s", ExternalURL: "https://s.example.com"},
+		},
+		Sync:    config.SyncConfig{FailoverEnabled: false, ConsistencySamplePct: 0.01},
+		Metrics: config.MetricsConfig{Addr: ":9101"},
+	}
+	var buf bytes.Buffer
+	if err := Generate(&buf, cfg); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	out := buf.String()
+	if !contains(out, "false") {
+		t.Error("runbook should show failover disabled")
+	}
+}

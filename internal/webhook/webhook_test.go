@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,5 +122,108 @@ func TestTriggerManagerDebounces(t *testing.T) {
 	count := atomic.LoadInt32(&callCount)
 	if count != 1 {
 		t.Errorf("expected 1 call after debounce, got %d", count)
+	}
+}
+
+func TestStartAndShutdown(t *testing.T) {
+	srv, _ := NewServer("127.0.0.1:0", "secret", func(ctx context.Context, p, e string) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Start returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after context cancel")
+	}
+}
+
+func TestHandleWebhookMethodNotAllowed(t *testing.T) {
+	srv, _ := NewServer("127.0.0.1:0", "secret", func(ctx context.Context, p, e string) error { return nil })
+	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
+	w := httptest.NewRecorder()
+	srv.handleWebhook(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Code = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleWebhookWrongToken(t *testing.T) {
+	srv, _ := NewServer("127.0.0.1:0", "secret", func(ctx context.Context, p, e string) error { return nil })
+	req := httptest.NewRequest(http.MethodPost, "/webhook", nil)
+	req.Header.Set("X-Gitlab-Token", "wrong")
+	w := httptest.NewRecorder()
+	srv.handleWebhook(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Code = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleWebhookBadJSON(t *testing.T) {
+	srv, _ := NewServer("127.0.0.1:0", "secret", func(ctx context.Context, p, e string) error { return nil })
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader("not json"))
+	req.Header.Set("X-Gitlab-Token", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleWebhook(w, req)
+	// Handler logs a warning on bad JSON but still returns 200 (accepts the webhook).
+	if w.Code != http.StatusOK {
+		t.Errorf("Code = %d, want %d (handler accepts but logs warning)", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleWebhookSuccess(t *testing.T) {
+	srv, _ := NewServer("127.0.0.1:0", "secret", func(ctx context.Context, p, e string) error { return nil })
+	body := `{"event_name":"push","project":{"path_with_namespace":"group/proj"}}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	req.Header.Set("X-Gitlab-Token", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleWebhook(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Code = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleWebhookNoProjectPath(t *testing.T) {
+	srv, _ := NewServer("127.0.0.1:0", "secret", func(ctx context.Context, p, e string) error { return nil })
+	body := `{"event_name":"push"}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	req.Header.Set("X-Gitlab-Token", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleWebhook(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Code = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestExtractProjectPathNested(t *testing.T) {
+	body := []byte(`{"project":{"path_with_namespace":"group/sub/proj"}}`)
+	path, err := extractProjectPath(body)
+	if err != nil {
+		t.Fatalf("extractProjectPath: %v", err)
+	}
+	if path != "group/sub/proj" {
+		t.Errorf("path = %q, want group/sub/proj", path)
+	}
+}
+
+func TestExtractProjectPathEmpty(t *testing.T) {
+	body := []byte(`{}`)
+	path, err := extractProjectPath(body)
+	if err != nil {
+		// Expected — no project path in empty payload.
+		if path != "" {
+			t.Errorf("path = %q, want empty", path)
+		}
+		return
+	}
+	if path != "" {
+		t.Errorf("path = %q, want empty", path)
 	}
 }
