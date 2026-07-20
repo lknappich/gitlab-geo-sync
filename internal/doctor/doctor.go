@@ -8,7 +8,6 @@ package doctor
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -18,6 +17,31 @@ import (
 	"github.com/lknappich/gitlab-geo-sync/internal/dbkey"
 	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
+
+// PoolFactory builds a *pgxpool.Pool from a DSN. Tests can inject a
+// fake that returns an in-memory pool or an error. The default is the
+// real pgxpool.New.
+type PoolFactory func(ctx context.Context, dsn string) (Pool, error)
+
+// Pool is the minimal subset of *pgxpool.Pool that doctor checks need.
+type Pool interface {
+	QueryRow(ctx context.Context, sql string, args ...any) Row
+	Close()
+}
+
+// Row is the minimal subset of pgx.Row that doctor checks need.
+type Row interface {
+	Scan(dest ...any) error
+}
+
+// poolAdapter wraps a *pgxpool.Pool to satisfy the Pool interface.
+type poolAdapter struct {
+	*pgxpool.Pool
+}
+
+func (a *poolAdapter) QueryRow(ctx context.Context, sql string, args ...any) Row {
+	return a.Pool.QueryRow(ctx, sql, args...)
+}
 
 // Check represents a single prerequisite check.
 type Check struct {
@@ -35,11 +59,28 @@ type Result struct {
 	Warn   int
 }
 
+// poolFactory is the active pool builder; defaults to pgxpool.New but
+// can be replaced in tests via the unexported poolFactory variable.
+var poolFactory PoolFactory = defaultPoolFactory
+
+func defaultPoolFactory(ctx context.Context, dsn string) (Pool, error) {
+	p, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	return &poolAdapter{Pool: p}, nil
+}
+
 // Run executes all doctor checks against the config and returns a result.
 func Run(ctx context.Context, cfg *config.Config) *Result {
+	return RunWith(ctx, cfg, sshexec.Default, poolFactory)
+}
+
+// RunWith is like Run but accepts an injectable SSH runner and pool
+// factory (used by tests).
+func RunWith(ctx context.Context, cfg *config.Config, runner sshexec.Runner, pf PoolFactory) *Result {
 	r := &Result{}
-	sshCfg := cfg.SSHExecConfig()
-	r.checks(ctx, cfg, sshCfg)
+	r.checks(ctx, cfg, runner, pf)
 	for _, c := range r.Checks {
 		switch c.Status {
 		case "PASS":
@@ -55,61 +96,61 @@ func Run(ctx context.Context, cfg *config.Config) *Result {
 
 func (r *Result) add(c Check) { r.Checks = append(r.Checks, c) }
 
-func (r *Result) checks(ctx context.Context, cfg *config.Config, sshCfg sshexec.Config) {
+func (r *Result) checks(ctx context.Context, cfg *config.Config, runner sshexec.Runner, pf PoolFactory) {
 	// --- SSH connectivity ---
-	r.add(sshCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
+	r.add(sshCheck(ctx, "primary", cfg.Primary.SSHHost, runner))
 
 	// --- PostgreSQL: primary control connection ---
-	r.add(pgControlCheck(ctx, "primary", cfg.Primary.Postgres))
+	r.add(pgControlCheck(ctx, "primary", cfg.Primary.Postgres, pf))
 
 	// --- PostgreSQL: replication user exists and has REPLICATION ---
-	r.add(pgReplicationRoleCheck(ctx, "primary", cfg.Primary.Postgres))
+	r.add(pgReplicationRoleCheck(ctx, "primary", cfg.Primary.Postgres, pf))
 
 	// --- PostgreSQL: primary has wal_level=replica ---
-	r.add(pgWalLevelCheck(ctx, "primary", cfg.Primary.Postgres))
+	r.add(pgWalLevelCheck(ctx, "primary", cfg.Primary.Postgres, pf))
 
 	// --- PostgreSQL: max_wal_senders > 0 ---
-	r.add(pgWalSendersCheck(ctx, "primary", cfg.Primary.Postgres))
+	r.add(pgWalSendersCheck(ctx, "primary", cfg.Primary.Postgres, pf))
 
 	// --- db_key_base present on primary ---
-	r.add(dbKeyPresentCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
+	r.add(dbKeyPresentCheck(ctx, "primary", cfg.Primary.SSHHost, runner))
 
 	// --- rsync available on primary ---
-	r.add(rsyncCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
+	r.add(rsyncCheck(ctx, "primary", cfg.Primary.SSHHost, runner))
 
 	// --- git available on primary ---
-	r.add(gitCheck(ctx, "primary", cfg.Primary.SSHHost, sshCfg))
+	r.add(gitCheck(ctx, "primary", cfg.Primary.SSHHost, runner))
 
 	// --- Per-secondary checks ---
 	for _, sc := range cfg.Secondaries {
 		label := "secondary:" + sc.Name
 
 		// SSH.
-		r.add(sshCheck(ctx, label, sc.SSHHost, sshCfg))
+		r.add(sshCheck(ctx, label, sc.SSHHost, runner))
 
 		// PG control connection.
-		r.add(pgControlCheck(ctx, label, sc.Postgres))
+		r.add(pgControlCheck(ctx, label, sc.Postgres, pf))
 
 		// PG is in recovery (should be a standby).
-		r.add(pgInRecoveryCheck(ctx, label, sc.Postgres))
+		r.add(pgInRecoveryCheck(ctx, label, sc.Postgres, pf))
 
 		// db_key_base present.
-		r.add(dbKeyPresentCheck(ctx, label, sc.SSHHost, sshCfg))
+		r.add(dbKeyPresentCheck(ctx, label, sc.SSHHost, runner))
 
 		// db_key_base matches primary.
 		if cfg.Primary.SSHHost != "" && sc.SSHHost != "" {
-			r.add(dbKeyParityCheck(ctx, cfg.Primary.SSHHost, sc.SSHHost, sc.Name, sshCfg))
+			r.add(dbKeyParityCheck(ctx, cfg.Primary.SSHHost, sc.SSHHost, sc.Name, runner))
 		}
 
 		// rsync available.
-		r.add(rsyncCheck(ctx, label, sc.SSHHost, sshCfg))
+		r.add(rsyncCheck(ctx, label, sc.SSHHost, runner))
 
 		// git available.
-		r.add(gitCheck(ctx, label, sc.SSHHost, sshCfg))
+		r.add(gitCheck(ctx, label, sc.SSHHost, runner))
 
 		// Repos path exists on secondary.
 		if sc.Git.ReposPath != "" {
-			r.add(pathExistsCheck(ctx, label, sc.SSHHost, sc.Git.ReposPath, "repos_path", sshCfg))
+			r.add(pathExistsCheck(ctx, label, sc.SSHHost, sc.Git.ReposPath, "repos_path", runner))
 		}
 	}
 
@@ -121,15 +162,12 @@ func (r *Result) checks(ctx context.Context, cfg *config.Config, sshCfg sshexec.
 
 // --- individual checks ---
 
-func sshCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
+func sshCheck(ctx context.Context, label, sshHost string, runner sshexec.Runner) Check {
 	if sshHost == "" {
 		return Check{Name: "ssh:" + label, Category: "connectivity",
 			Status: "WARN", Detail: "ssh_host not configured (needed for rsync/fetch/failover)"}
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	args := append(sshCfg.ExtraArgs(), "-o", "ConnectTimeout=8", sshHost, "echo ok")
-	out, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
+	out, err := runner.CombinedOutput(ctx, sshHost, "echo ok")
 	if err != nil {
 		return Check{Name: "ssh:" + label, Category: "connectivity",
 			Status: "FAIL", Detail: fmt.Sprintf("ssh %s: %v: %s", sshHost, err, strings.TrimSpace(string(out)))}
@@ -138,14 +176,14 @@ func sshCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config)
 		Status: "PASS", Detail: sshHost}
 }
 
-func pgControlCheck(ctx context.Context, label string, pg config.PostgresConfig) Check {
+func pgControlCheck(ctx context.Context, label string, pg config.PostgresConfig, pf PoolFactory) Check {
 	if pg.Host == "" {
 		return Check{Name: "pg:" + label + ":control", Category: "postgres",
 			Status: "FAIL", Detail: "postgres.host not configured"}
 	}
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(connCtx, pg.DSN())
+	pool, err := pf(connCtx, pg.DSN())
 	if err != nil {
 		return Check{Name: "pg:" + label + ":control", Category: "postgres",
 			Status: "FAIL", Detail: fmt.Sprintf("connect: %v", err)}
@@ -165,10 +203,10 @@ func pgControlCheck(ctx context.Context, label string, pg config.PostgresConfig)
 		Status: "PASS", Detail: short}
 }
 
-func pgReplicationRoleCheck(ctx context.Context, label string, pg config.PostgresConfig) Check {
+func pgReplicationRoleCheck(ctx context.Context, label string, pg config.PostgresConfig, pf PoolFactory) Check {
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(connCtx, pg.DSN())
+	pool, err := pf(connCtx, pg.DSN())
 	if err != nil {
 		return Check{Name: "pg:" + label + ":repl-role", Category: "postgres",
 			Status: "FAIL", Detail: fmt.Sprintf("connect: %v", err)}
@@ -190,10 +228,10 @@ func pgReplicationRoleCheck(ctx context.Context, label string, pg config.Postgre
 		Status: "PASS", Detail: fmt.Sprintf("role %s has REPLICATION", pg.ReplicationUser)}
 }
 
-func pgWalLevelCheck(ctx context.Context, label string, pg config.PostgresConfig) Check {
+func pgWalLevelCheck(ctx context.Context, label string, pg config.PostgresConfig, pf PoolFactory) Check {
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(connCtx, pg.DSN())
+	pool, err := pf(connCtx, pg.DSN())
 	if err != nil {
 		return Check{Name: "pg:" + label + ":wal_level", Category: "postgres",
 			Status: "FAIL", Detail: fmt.Sprintf("connect: %v", err)}
@@ -213,10 +251,10 @@ func pgWalLevelCheck(ctx context.Context, label string, pg config.PostgresConfig
 		Status: "PASS", Detail: "wal_level=" + level}
 }
 
-func pgWalSendersCheck(ctx context.Context, label string, pg config.PostgresConfig) Check {
+func pgWalSendersCheck(ctx context.Context, label string, pg config.PostgresConfig, pf PoolFactory) Check {
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(connCtx, pg.DSN())
+	pool, err := pf(connCtx, pg.DSN())
 	if err != nil {
 		return Check{Name: "pg:" + label + ":max_wal_senders", Category: "postgres",
 			Status: "FAIL", Detail: fmt.Sprintf("connect: %v", err)}
@@ -236,10 +274,10 @@ func pgWalSendersCheck(ctx context.Context, label string, pg config.PostgresConf
 		Status: "PASS", Detail: "max_wal_senders=" + level}
 }
 
-func pgInRecoveryCheck(ctx context.Context, label string, pg config.PostgresConfig) Check {
+func pgInRecoveryCheck(ctx context.Context, label string, pg config.PostgresConfig, pf PoolFactory) Check {
 	connCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(connCtx, pg.DSN())
+	pool, err := pf(connCtx, pg.DSN())
 	if err != nil {
 		return Check{Name: "pg:" + label + ":in_recovery", Category: "postgres",
 			Status: "WARN", Detail: fmt.Sprintf("connect: %v (expected if not yet bootstrapped)", err)}
@@ -259,16 +297,13 @@ func pgInRecoveryCheck(ctx context.Context, label string, pg config.PostgresConf
 		Status: "PASS", Detail: "in recovery (standby)"}
 }
 
-func dbKeyPresentCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
+func dbKeyPresentCheck(ctx context.Context, label, sshHost string, runner sshexec.Runner) Check {
 	if sshHost == "" {
 		return Check{Name: "dbkey:" + label, Category: "dbkey",
 			Status: "WARN", Detail: "ssh_host not configured"}
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	remoteCmd := "sudo grep -c 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep -c 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || echo 0"
-	args := append(sshCfg.ExtraArgs(), sshHost, remoteCmd)
-	out, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
+	out, err := runner.CombinedOutput(ctx, sshHost, remoteCmd)
 	if err != nil {
 		return Check{Name: "dbkey:" + label, Category: "dbkey",
 			Status: "FAIL", Detail: fmt.Sprintf("ssh: %v", err)}
@@ -284,8 +319,8 @@ func dbKeyPresentCheck(ctx context.Context, label, sshHost string, sshCfg sshexe
 		Status: "PASS", Detail: "present in secrets.yml"}
 }
 
-func dbKeyParityCheck(ctx context.Context, primarySSH, secondarySSH, secondaryName string, sshCfg sshexec.Config) Check {
-	err := dbkey.CheckWithConfig(ctx, primarySSH, secondarySSH, sshCfg)
+func dbKeyParityCheck(ctx context.Context, primarySSH, secondarySSH, secondaryName string, runner sshexec.Runner) Check {
+	err := dbkey.CheckWithRunner(ctx, primarySSH, secondarySSH, runner)
 	if err != nil {
 		return Check{Name: "dbkey:parity:" + secondaryName, Category: "dbkey",
 			Status: "FAIL", Detail: err.Error()}
@@ -294,23 +329,20 @@ func dbKeyParityCheck(ctx context.Context, primarySSH, secondarySSH, secondaryNa
 		Status: "PASS", Detail: "primary and secondary match"}
 }
 
-func rsyncCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
-	return remoteBinaryCheck(ctx, label, "rsync", sshHost, "rsync --version", sshCfg)
+func rsyncCheck(ctx context.Context, label, sshHost string, runner sshexec.Runner) Check {
+	return remoteBinaryCheck(ctx, label, "rsync", sshHost, "rsync --version", runner)
 }
 
-func gitCheck(ctx context.Context, label, sshHost string, sshCfg sshexec.Config) Check {
-	return remoteBinaryCheck(ctx, label, "git", sshHost, "git --version", sshCfg)
+func gitCheck(ctx context.Context, label, sshHost string, runner sshexec.Runner) Check {
+	return remoteBinaryCheck(ctx, label, "git", sshHost, "git --version", runner)
 }
 
-func remoteBinaryCheck(ctx context.Context, label, bin, sshHost, cmd string, sshCfg sshexec.Config) Check {
+func remoteBinaryCheck(ctx context.Context, label, bin, sshHost, cmd string, runner sshexec.Runner) Check {
 	if sshHost == "" {
 		return Check{Name: bin + ":" + label, Category: "tools",
 			Status: "WARN", Detail: "ssh_host not configured"}
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	args := append(sshCfg.ExtraArgs(), sshHost, cmd)
-	out, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
+	out, err := runner.CombinedOutput(ctx, sshHost, cmd)
 	if err != nil {
 		return Check{Name: bin + ":" + label, Category: "tools",
 			Status: "FAIL", Detail: fmt.Sprintf("%s not found: %v", bin, err)}
@@ -323,15 +355,12 @@ func remoteBinaryCheck(ctx context.Context, label, bin, sshHost, cmd string, ssh
 		Status: "PASS", Detail: version}
 }
 
-func pathExistsCheck(ctx context.Context, label, sshHost, path, pathName string, sshCfg sshexec.Config) Check {
+func pathExistsCheck(ctx context.Context, label, sshHost, path, pathName string, runner sshexec.Runner) Check {
 	if sshHost == "" {
 		return Check{Name: "path:" + label + ":" + pathName, Category: "filesystem",
 			Status: "WARN", Detail: "ssh_host not configured"}
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	args := append(sshCfg.ExtraArgs(), sshHost, "test", "-d", path)
-	_, err := exec.CommandContext(cmdCtx, "ssh", args...).CombinedOutput()
+	_, err := runner.CombinedOutput(ctx, sshHost, "test -d "+path)
 	if err != nil {
 		return Check{Name: "path:" + label + ":" + pathName, Category: "filesystem",
 			Status: "WARN", Detail: fmt.Sprintf("%s does not exist yet (will be created on first sync)", path)}
