@@ -11,6 +11,15 @@ import (
 	"strings"
 )
 
+// Runner is the minimal interface for executing a remote command over
+// SSH. Both *Config and any test mock satisfy it. Functions that need
+// to invoke SSH should accept a Runner rather than a concrete Config
+// so tests can inject a mock without touching the network.
+type Runner interface {
+	CombinedOutput(ctx context.Context, host, remoteCmd string) ([]byte, error)
+	SSHString() string
+}
+
 // Config controls SSH options applied to every connection.
 type Config struct {
 	// KnownHostsFile is the path to a known_hosts file. When set,

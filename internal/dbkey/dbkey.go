@@ -23,17 +23,22 @@ var dbKeyRe = regexp.MustCompile(`^\s*gitlab_rails\['db_key_base'\]\s*=\s*['"]?(
 // compares them. Returns nil if they match, an error describing the
 // mismatch otherwise. The key value itself is never logged.
 func Check(ctx context.Context, primarySSH, secondarySSH string) error {
-	return CheckWithConfig(ctx, primarySSH, secondarySSH, sshexec.Default)
+	return CheckWithRunner(ctx, primarySSH, secondarySSH, sshexec.Default)
 }
 
 // CheckWithConfig is like Check but uses the provided SSH config for
 // host-key verification.
 func CheckWithConfig(ctx context.Context, primarySSH, secondarySSH string, sshCfg sshexec.Config) error {
-	pKey, err := fetchKey(ctx, primarySSH, sshCfg)
+	return CheckWithRunner(ctx, primarySSH, secondarySSH, sshCfg)
+}
+
+// CheckWithRunner accepts any sshexec.Runner (e.g. a mock in tests).
+func CheckWithRunner(ctx context.Context, primarySSH, secondarySSH string, runner sshexec.Runner) error {
+	pKey, err := fetchKey(ctx, primarySSH, runner)
 	if err != nil {
 		return fmt.Errorf("primary db_key_base: %w", err)
 	}
-	sKey, err := fetchKey(ctx, secondarySSH, sshCfg)
+	sKey, err := fetchKey(ctx, secondarySSH, runner)
 	if err != nil {
 		return fmt.Errorf("secondary db_key_base: %w", err)
 	}
@@ -47,17 +52,17 @@ func CheckWithConfig(ctx context.Context, primarySSH, secondarySSH string, sshCf
 // /etc/gitlab/gitlab.rb (when explicitly set) and the generated
 // /var/opt/gitlab/gitlab-rails/etc/secrets.yml (Omnibus default location).
 // Returns the key value or an error. The key is never printed by callers.
-func fetchKey(ctx context.Context, sshHost string, sshCfg sshexec.Config) (string, error) {
+func fetchKey(ctx context.Context, sshHost string, runner sshexec.Runner) (string, error) {
 	if err := sshexec.CheckHost(sshHost); err != nil {
 		return "", err
 	}
 
-	key, err := tryFetchKey(ctx, sshHost, sshCfg, true)
+	key, err := tryFetchKey(ctx, sshHost, runner, true)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		key, err = tryFetchKey(ctx, sshHost, sshCfg, false)
+		key, err = tryFetchKey(ctx, sshHost, runner, false)
 		if err != nil {
 			return "", fmt.Errorf("ssh %s: %w", sshHost, err)
 		}
@@ -73,12 +78,12 @@ func fetchKey(ctx context.Context, sshHost string, sshCfg sshexec.Config) (strin
 	return strings.TrimSpace(string(m[1])), nil
 }
 
-func tryFetchKey(ctx context.Context, sshHost string, sshCfg sshexec.Config, withSudo bool) (string, error) {
+func tryFetchKey(ctx context.Context, sshHost string, runner sshexec.Runner, withSudo bool) (string, error) {
 	cmd := "grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || grep \"gitlab_rails\\['db_key_base'\\]\" /etc/gitlab/gitlab.rb 2>/dev/null || true"
 	if withSudo {
 		cmd = "sudo grep 'db_key_base' /var/opt/gitlab/gitlab-rails/etc/secrets.yml 2>/dev/null || " + cmd
 	}
-	out, err := sshCfg.CombinedOutput(ctx, sshHost, cmd)
+	out, err := runner.CombinedOutput(ctx, sshHost, cmd)
 	if err != nil {
 		return "", err
 	}
