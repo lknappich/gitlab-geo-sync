@@ -26,23 +26,30 @@ builds:
 
 archives:
   - id: default
-    builds: [geoctl]
+    ids: [geoctl]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE
       - deploy/config.example.yaml
 
-dockers:
-  - id: geoctl
-    goos: linux
-    goarch: amd64
-    ids: [geoctl]
-    image_templates:
-      - "ghcr.io/lknappich/gitlab-geo-sync:{{ .Version }}"
-      - "ghcr.io/lknappich/gitlab-geo-sync:latest"
-    dockerfile: Dockerfile
-    use: buildx
+dockers_v2:
+  - images:
+      - ghcr.io/lknappich/gitlab-geo-sync
+    tags:
+      - "{{ .Version }}"
+      - latest
+    labels:
+      org.opencontainers.image.description: "Independent orchestrator that mirrors a self-hosted GitLab to one or more replicas using standard tooling."
+      org.opencontainers.image.created: "{{.Date}}"
+      org.opencontainers.image.name: "{{.ProjectName}}"
+      org.opencontainers.image.revision: "{{.FullCommit}}"
+      org.opencontainers.image.version: "{{.Version}}"
+      org.opencontainers.image.source: "{{.GitURL}}"
+      org.opencontainers.image.licenses: Apache-2.0
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 changelog:
   sort: asc
