@@ -1,6 +1,10 @@
 package registry
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/lknappich/gitlab-geo-sync/internal/config"
@@ -84,5 +88,275 @@ func TestName(t *testing.T) {
 	r := &Reconciler{}
 	if r.Name() != "registry" {
 		t.Errorf("Name() = %q, want registry", r.Name())
+	}
+}
+
+func TestListRepositoriesOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/_catalog" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"repositories": []string{"foo", "bar"},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	repos, err := r.listRepositories(context.Background(), r.primaryClient, srv.URL+"/v2")
+	if err != nil {
+		t.Fatalf("listRepositories: %v", err)
+	}
+	if len(repos) != 2 || repos[0] != "foo" || repos[1] != "bar" {
+		t.Errorf("repos = %v", repos)
+	}
+}
+
+func TestListRepositoriesAuthRequired(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	_, err := r.listRepositories(context.Background(), r.primaryClient, srv.URL+"/v2")
+	if !isAuthError(err) {
+		t.Errorf("expected errAuthRequired, got %v", err)
+	}
+}
+
+func TestListRepositoriesBadStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	_, err := r.listRepositories(context.Background(), r.primaryClient, srv.URL+"/v2")
+	if err == nil {
+		t.Fatal("expected error on 500")
+	}
+}
+
+func TestListRepositoriesBadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	_, err := r.listRepositories(context.Background(), r.primaryClient, srv.URL+"/v2")
+	if err == nil {
+		t.Fatal("expected error on bad JSON")
+	}
+}
+
+func TestListRepositoriesBadURL(t *testing.T) {
+	r := &Reconciler{primaryClient: &http.Client{}}
+	_, err := r.listRepositories(context.Background(), r.primaryClient, "http://[::1")
+	if err == nil {
+		t.Fatal("expected error on bad URL")
+	}
+}
+
+func TestListTagsOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name": "foo",
+			"tags": []string{"v1", "v2"},
+		})
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	set, err := r.listTags(context.Background(), r.primaryClient, srv.URL+"/v2", "foo")
+	if err != nil {
+		t.Fatalf("listTags: %v", err)
+	}
+	if len(set) != 2 || !set["v1"] || !set["v2"] {
+		t.Errorf("set = %v", set)
+	}
+}
+
+func TestListTagsAuthRequired(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	_, err := r.listTags(context.Background(), r.primaryClient, srv.URL+"/v2", "foo")
+	if !isAuthError(err) {
+		t.Errorf("expected errAuthRequired, got %v", err)
+	}
+}
+
+func TestListTagsBadStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	_, err := r.listTags(context.Background(), r.primaryClient, srv.URL+"/v2", "foo")
+	if err == nil {
+		t.Fatal("expected error on 404")
+	}
+}
+
+func TestListTagsBadURL(t *testing.T) {
+	r := &Reconciler{primaryClient: &http.Client{}}
+	_, err := r.listTags(context.Background(), r.primaryClient, "http://[::1", "foo")
+	if err == nil {
+		t.Fatal("expected error on bad URL")
+	}
+}
+
+func TestListTagsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "foo"})
+	}))
+	defer srv.Close()
+	r := &Reconciler{primaryClient: srv.Client()}
+	set, err := r.listTags(context.Background(), r.primaryClient, srv.URL+"/v2", "foo")
+	if err != nil {
+		t.Fatalf("listTags: %v", err)
+	}
+	if len(set) != 0 {
+		t.Errorf("expected empty set, got %v", set)
+	}
+}
+
+func TestReconcileAuthSkip(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	r := &Reconciler{
+		primaryURL:      srv.URL + "/v2",
+		secondaryURL:    srv.URL + "/v2",
+		primaryClient:   srv.Client(),
+		secondaryClient: srv.Client(),
+	}
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK (auth skip), got: %s", res.Detail)
+	}
+}
+
+func TestReconcileRepoListDrift(t *testing.T) {
+	psrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"repositories": []string{"a", "b"},
+		})
+	}))
+	defer psrv.Close()
+	ssrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"repositories": []string{"a"},
+		})
+	}))
+	defer ssrv.Close()
+	r := &Reconciler{
+		primaryURL:      psrv.URL + "/v2",
+		secondaryURL:    ssrv.URL + "/v2",
+		primaryClient:   psrv.Client(),
+		secondaryClient: ssrv.Client(),
+	}
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on drift")
+	}
+	if res.Remaining == 0 {
+		t.Error("expected Remaining > 0")
+	}
+}
+
+func TestReconcilePrimaryCatalogError(t *testing.T) {
+	psrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer psrv.Close()
+	ssrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []string{}})
+	}))
+	defer ssrv.Close()
+	r := &Reconciler{
+		primaryURL:      psrv.URL + "/v2",
+		secondaryURL:    ssrv.URL + "/v2",
+		primaryClient:   psrv.Client(),
+		secondaryClient: ssrv.Client(),
+	}
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on primary catalog error")
+	}
+}
+
+func TestReconcileSecondaryCatalogError(t *testing.T) {
+	psrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []string{"a"}})
+	}))
+	defer psrv.Close()
+	ssrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ssrv.Close()
+	r := &Reconciler{
+		primaryURL:      psrv.URL + "/v2",
+		secondaryURL:    ssrv.URL + "/v2",
+		primaryClient:   psrv.Client(),
+		secondaryClient: ssrv.Client(),
+	}
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on secondary catalog error")
+	}
+}
+
+func TestReconcileInSync(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/_catalog" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []string{"a"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "a", "tags": []string{"v1"}})
+	}))
+	defer srv.Close()
+	r := &Reconciler{
+		primaryURL:      srv.URL + "/v2",
+		secondaryURL:    srv.URL + "/v2",
+		primaryClient:   srv.Client(),
+		secondaryClient: srv.Client(),
+	}
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK, got: %s", res.Detail)
+	}
+}
+
+func TestReconcileTagDrift(t *testing.T) {
+	psrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/_catalog" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []string{"a"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "a", "tags": []string{"v1", "v2"}})
+	}))
+	defer psrv.Close()
+	ssrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/_catalog" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []string{"a"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "a", "tags": []string{"v1"}})
+	}))
+	defer ssrv.Close()
+	r := &Reconciler{
+		primaryURL:      psrv.URL + "/v2",
+		secondaryURL:    ssrv.URL + "/v2",
+		primaryClient:   psrv.Client(),
+		secondaryClient: ssrv.Client(),
+	}
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on tag drift")
+	}
+	if res.Remaining == 0 {
+		t.Error("expected Remaining > 0")
 	}
 }
