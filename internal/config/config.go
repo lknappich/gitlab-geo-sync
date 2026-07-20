@@ -285,7 +285,7 @@ func resolveEnv(v reflect.Value) error {
 			return err
 		}
 		v.SetString(expanded)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if !v.IsNil() {
 			return resolveEnv(v.Elem())
 		}

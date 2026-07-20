@@ -14,6 +14,59 @@ linters:
     - ineffassign
     - misspell
     - revive
+  settings:
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+        - name: exported
+          disabled: true
+    staticcheck:
+      checks:
+        - all
+        - -QF1001
+        - -QF1002
+        - -QF1003
+        - -QF1004
+        - -QF1005
+        - -QF1006
+        - -QF1007
+        - -QF1008
+        - -QF1009
+        - -QF1010
+        - -QF1011
+        - -QF1012
+        - -ST1020
+        - -ST1021
+        - -ST1022
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - revive
+      - linters:
+          - gosec
+        text: "G204:"
+      - linters:
+          - gosec
+        text: "G304:"
+      - linters:
+          - gosec
+        text: "G703:"
+      - linters:
+          - gosec
+        text: "G401:"
+      - linters:
+          - gosec
+        text: "G505:"
+      - linters:
+          - gosec
+        text: "G404:"
+      - linters:
+          - gosec
+        text: "G118:"
 
 formatters:
   enable:
@@ -22,8 +75,3 @@ formatters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck

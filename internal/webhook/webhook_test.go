@@ -114,8 +114,8 @@ func TestTriggerManagerDebounces(t *testing.T) {
 		return nil
 	})
 
-	go mgr.Trigger(context.Background(), "proj", "push")
-	go mgr.Trigger(context.Background(), "proj", "push")
+	go func() { _ = mgr.Trigger(context.Background(), "proj", "push") }()
+	go func() { _ = mgr.Trigger(context.Background(), "proj", "push") }()
 
 	time.Sleep(4 * time.Second)
 	count := atomic.LoadInt32(&callCount)

@@ -1,6 +1,7 @@
 package gitfetch
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -46,7 +47,7 @@ func TestSha1HexDeterministic(t *testing.T) {
 
 func TestFetchProjectEmptyPath(t *testing.T) {
 	r := &Reconciler{}
-	err := r.FetchProject(nil, "")
+	err := r.FetchProject(context.TODO(), "")
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}
@@ -54,7 +55,7 @@ func TestFetchProjectEmptyPath(t *testing.T) {
 
 func TestFetchProjectRejectsTraversal(t *testing.T) {
 	r := &Reconciler{}
-	err := r.FetchProject(nil, "../../etc/passwd")
+	err := r.FetchProject(context.TODO(), "../../etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for traversal path")
 	}

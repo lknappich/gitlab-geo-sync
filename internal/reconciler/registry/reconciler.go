@@ -41,10 +41,6 @@ type Reconciler struct {
 // New creates a registry reconciler from the primary/secondary external URLs.
 func New(primary, secondary *config.SiteConfig, dryRun bool) *Reconciler {
 	primaryURL := strings.TrimSuffix(primary.ExternalURL, "/") + "/v2"
-	if primary.Registry != nil && primary.Registry.FSPath != "" {
-		// If registry has its own external URL, it would be configured separately;
-		// for now use the GitLab external URL + /v2 which proxies to the registry.
-	}
 	secondaryURL := strings.TrimSuffix(secondary.ExternalURL, "/") + "/v2"
 
 	timeout := 30 * time.Second

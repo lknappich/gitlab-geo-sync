@@ -84,11 +84,12 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(parallel)
 
+loop:
 	for _, p := range projects {
 		p := p
 		select {
 		case <-gctx.Done():
-			break
+			break loop
 		default:
 		}
 		g.Go(func() error {

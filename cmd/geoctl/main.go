@@ -76,7 +76,7 @@ func newRootCmd() *cobra.Command {
 		newServeCmd(g),
 		newPGCmd(g),
 		newSyncCmd(g),
-		newDbKeyCmd(g),
+		newDBKeyCmd(g),
 		newFailoverCmd(g),
 		newAdoptCmd(g),
 		newRunbookCmd(g),
@@ -449,7 +449,7 @@ func newSyncCmd(g *globalFlags) *cobra.Command {
 
 // --- dbkey subcommand ---
 
-func newDbKeyCmd(g *globalFlags) *cobra.Command {
+func newDBKeyCmd(g *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "dbkey",
 		Short:         "Verify db_key_base parity between primary and secondary",
