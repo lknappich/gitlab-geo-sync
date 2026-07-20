@@ -7,11 +7,12 @@ package autorepair
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/lknappich/gitlab-geo-sync/internal/localcmd"
 )
 
 // GitRepair re-fetches a specific project repo from the primary.
@@ -19,6 +20,7 @@ type GitRepair struct {
 	primarySSHHost string
 	reposPath      string
 	dryRun         bool
+	runner         localcmd.Runner
 }
 
 // NewGitRepair creates a git repairer.
@@ -27,11 +29,18 @@ func NewGitRepair(primarySSHHost, reposPath string, dryRun bool) *GitRepair {
 		primarySSHHost: primarySSHHost,
 		reposPath:      reposPath,
 		dryRun:         dryRun,
+		runner:         localcmd.Default,
 	}
 }
 
-// RepairRepo re-fetches a single repo identified by its path (e.g.
-// "group/subgroup/project.git").
+// WithRunner returns a copy with the given localcmd.Runner (for tests).
+func (g *GitRepair) WithRunner(r localcmd.Runner) *GitRepair {
+	cp := *g
+	cp.runner = r
+	return &cp
+}
+
+// RepairRepo re-fetches a single repo identified by its path.
 func (g *GitRepair) RepairRepo(ctx context.Context, repoPath string) error {
 	localPath := filepath.Join(g.reposPath, repoPath)
 	remoteURL := fmt.Sprintf("ssh://%s/var/opt/gitlab/git-data/repositories/%s",
@@ -50,8 +59,7 @@ func (g *GitRepair) RepairRepo(ctx context.Context, repoPath string) error {
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "git", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := localcmd.RunWith(ctx, g.runner, "git", args, nil)
 	if err != nil {
 		return fmt.Errorf("git fetch %s: %w: %s", repoPath, err, strings.TrimSpace(string(out)))
 	}
@@ -69,10 +77,7 @@ func NewS3Repair(dryRun bool) *S3Repair {
 	return &S3Repair{dryRun: dryRun}
 }
 
-// RepairObject logs a missing S3 key. Actual S3 copy is handled by the
-// cloud provider's cross-region replication; this is a fallback for
-// objects that fell through the cracks. Implementation will use
-// aws-sdk-go-v2 CopyObject in Phase 2g+.
+// RepairObject logs a missing S3 key.
 func (s *S3Repair) RepairObject(ctx context.Context, bucket, key string) error {
 	if s.dryRun {
 		log.Info().Str("bucket", bucket).Str("key", key).Msg("[dry-run] would copy S3 object")

@@ -2,9 +2,12 @@ package consistency
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestSampleGitFsckEmptyPath(t *testing.T) {
@@ -70,5 +73,165 @@ func TestIsApproxEqual(t *testing.T) {
 				t.Errorf("isApproxEqual(%d, %d) = %v, want %v", tc.a, tc.b, got, tc.want)
 			}
 		})
+	}
+}
+
+// mockQuerier implements rowQuerier.
+type mockQuerier struct {
+	counts map[string]int64
+	err    error
+}
+
+func (m *mockQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if m.err != nil {
+		return &mockRow{err: m.err}
+	}
+	table, _ := args[0].(string)
+	count, ok := m.counts[table]
+	if !ok {
+		return &mockRow{err: pgx.ErrNoRows}
+	}
+	return &mockRow{count: count}
+}
+
+type mockRow struct {
+	count int64
+	err   error
+}
+
+func (r *mockRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*(dest[0].(*int64)) = r.count
+	return nil
+}
+
+func TestReconcileAllMatch(t *testing.T) {
+	counts := map[string]int64{"projects": 100, "namespaces": 50}
+	primary := &mockQuerier{counts: counts}
+	secondary := &mockQuerier{counts: counts}
+	r := (&Reconciler{reposPath: ""}).WithPools(primary, secondary)
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK, got: %s", res.Detail)
+	}
+}
+
+func TestReconcileDrift(t *testing.T) {
+	primary := &mockQuerier{counts: map[string]int64{"projects": 100}}
+	secondary := &mockQuerier{counts: map[string]int64{"projects": 50}}
+	r := (&Reconciler{reposPath: ""}).WithPools(primary, secondary)
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on drift")
+	}
+	if res.Remaining == 0 {
+		t.Error("expected Remaining > 0")
+	}
+}
+
+func TestReconcileApproxEqualSkipsDrift(t *testing.T) {
+	primary := &mockQuerier{counts: map[string]int64{"projects": 1000}}
+	secondary := &mockQuerier{counts: map[string]int64{"projects": 1005}}
+	r := (&Reconciler{reposPath: ""}).WithPools(primary, secondary)
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK (within tolerance), got: %s", res.Detail)
+	}
+}
+
+func TestReconcilePrimaryError(t *testing.T) {
+	primary := &mockQuerier{err: errors.New("db down")}
+	secondary := &mockQuerier{counts: map[string]int64{}}
+	r := (&Reconciler{reposPath: ""}).WithPools(primary, secondary)
+	res := r.Reconcile(context.Background())
+	if res.Remaining == 0 {
+		t.Error("expected Remaining > 0 on primary error")
+	}
+}
+
+func TestReconcileSecondaryError(t *testing.T) {
+	primary := &mockQuerier{counts: map[string]int64{}}
+	secondary := &mockQuerier{err: errors.New("db down")}
+	r := (&Reconciler{reposPath: ""}).WithPools(primary, secondary)
+	res := r.Reconcile(context.Background())
+	if res.Remaining == 0 {
+		t.Error("expected Remaining > 0 on secondary error")
+	}
+}
+
+func TestReconcileTableMissing(t *testing.T) {
+	// Missing table returns pgx.ErrNoRows -> rowCount returns (0, nil).
+	primary := &mockQuerier{counts: map[string]int64{}}
+	secondary := &mockQuerier{counts: map[string]int64{}}
+	r := (&Reconciler{reposPath: ""}).WithPools(primary, secondary)
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK when tables missing, got: %s", res.Detail)
+	}
+}
+
+func TestName(t *testing.T) {
+	r := &Reconciler{}
+	if r.Name() != "consistency_sweep" {
+		t.Errorf("Name() = %q", r.Name())
+	}
+}
+
+// stubCmd returns canned output for execCmd.
+type stubCmd struct {
+	out []byte
+	err error
+}
+
+func (s *stubCmd) CombinedOutput() ([]byte, error) { return s.out, s.err }
+
+func TestExecGitFsckSuccess(t *testing.T) {
+	orig := execCmd
+	execCmd = func(ctx context.Context, name string, args ...string) cmdRunner {
+		return &stubCmd{out: []byte("ok")}
+	}
+	defer func() { execCmd = orig }()
+	out, err := execGitFsck(context.Background(), "/repo")
+	if err != nil {
+		t.Fatalf("execGitFsck: %v", err)
+	}
+	if out != "ok" {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestExecGitFsckError(t *testing.T) {
+	orig := execCmd
+	execCmd = func(ctx context.Context, name string, args ...string) cmdRunner {
+		return &stubCmd{err: errors.New("fsck failed"), out: []byte("error")}
+	}
+	defer func() { execCmd = orig }()
+	_, err := execGitFsck(context.Background(), "/repo")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestGitFsckPasses(t *testing.T) {
+	orig := execCmd
+	execCmd = func(ctx context.Context, name string, args ...string) cmdRunner {
+		return &stubCmd{out: []byte("")}
+	}
+	defer func() { execCmd = orig }()
+	if !gitFsck(context.Background(), "/repo") {
+		t.Error("gitFsck should return true on success")
+	}
+}
+
+func TestGitFsckFails(t *testing.T) {
+	orig := execCmd
+	execCmd = func(ctx context.Context, name string, args ...string) cmdRunner {
+		return &stubCmd{err: errors.New("broken"), out: []byte("corrupt")}
+	}
+	defer func() { execCmd = orig }()
+	if gitFsck(context.Background(), "/repo") {
+		t.Error("gitFsck should return false on error")
 	}
 }

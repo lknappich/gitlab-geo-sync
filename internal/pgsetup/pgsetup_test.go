@@ -2,6 +2,7 @@ package pgsetup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,5 +143,115 @@ func TestRunDryRunNoDuplicateSlotFlag(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("dry-run: %v", err)
+	}
+}
+
+// stubBasebackup is a test basebackupRunner.
+type stubBasebackup struct {
+	err error
+}
+
+func (s *stubBasebackup) Run() error { return s.err }
+
+func TestRunSuccess(t *testing.T) {
+	orig := runBasebackup
+	runBasebackup = func(ctx context.Context, opts Options) basebackupRunner {
+		// Simulate pg_basebackup -R writing postgresql.auto.conf.
+		_ = os.WriteFile(filepath.Join(opts.DataDir, "postgresql.auto.conf"),
+			[]byte("primary_conninfo = 'host=h'\n"), 0o600)
+		return &stubBasebackup{}
+	}
+	defer func() { runBasebackup = orig }()
+
+	dir := t.TempDir()
+	err := Run(context.Background(), Options{
+		PrimaryDSN: "host=h user=u",
+		DataDir:    dir,
+		SlotName:   "myslot",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestRunBasebackupError(t *testing.T) {
+	orig := runBasebackup
+	runBasebackup = func(ctx context.Context, opts Options) basebackupRunner {
+		return &stubBasebackup{err: errors.New("basebackup failed")}
+	}
+	defer func() { runBasebackup = orig }()
+
+	dir := t.TempDir()
+	err := Run(context.Background(), Options{
+		PrimaryDSN: "host=h",
+		DataDir:    dir,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "pg_basebackup") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestRunBasebackupErrorWithSlot(t *testing.T) {
+	orig := runBasebackup
+	var capturedArgs []string
+	_ = capturedArgs
+	runBasebackup = func(ctx context.Context, opts Options) basebackupRunner {
+		return &stubBasebackup{err: errors.New("slot exists")}
+	}
+	defer func() { runBasebackup = orig }()
+
+	dir := t.TempDir()
+	err := Run(context.Background(), Options{
+		PrimaryDSN: "host=h",
+		DataDir:    dir,
+		SlotName:   "myslot",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestBuildBasebackupArgs(t *testing.T) {
+	args := buildBasebackupArgs(Options{
+		PrimaryDSN: "host=h",
+		DataDir:    "/data",
+		SlotName:   "slot1",
+	})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-S slot1") {
+		t.Errorf("args should include -S slot1: %s", joined)
+	}
+	if !strings.Contains(joined, "--create-slot") {
+		t.Errorf("args should include --create-slot: %s", joined)
+	}
+}
+
+func TestBuildBasebackupArgsNoSlot(t *testing.T) {
+	args := buildBasebackupArgs(Options{
+		PrimaryDSN: "host=h",
+		DataDir:    "/data",
+	})
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "-S") {
+		t.Errorf("args should not include -S when no slot: %s", joined)
+	}
+}
+
+func TestInjectAppNameNoQuote(t *testing.T) {
+	line := "primary_conninfo = host=h"
+	got := injectAppName(line, "myapp")
+	if !strings.Contains(got, "application_name=myapp") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestInjectAppNameWithQuote(t *testing.T) {
+	line := "primary_conninfo = 'host=h'"
+	got := injectAppName(line, "myapp")
+	if !strings.Contains(got, "application_name=myapp") {
+		t.Errorf("got %q", got)
 	}
 }

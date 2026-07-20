@@ -12,17 +12,38 @@ import (
 	"strings"
 )
 
+// basebackupRunner is the minimal interface for running pg_basebackup.
+// The default uses exec.CommandContext; tests inject a mock.
+type basebackupRunner interface {
+	Run() error
+}
+
 // Options controls a pg_basebackup-based standby bootstrap.
 type Options struct {
-	// PrimaryDSN is a libpq connection string for the replication user
-	// on the primary, e.g. "host=... user=replicator password=...".
 	PrimaryDSN string
-	// DataDir is the secondary's PGDATA, e.g. /var/lib/postgresql/data.
-	DataDir string
-	// SlotName is an optional physical replication slot to create/use.
-	SlotName string
-	// DryRun prints commands without executing.
-	DryRun bool
+	DataDir    string
+	SlotName   string
+	DryRun     bool
+}
+
+// runBasebackup is the factory that builds a basebackupRunner; tests
+// can replace it.
+var runBasebackup = defaultBasebackupFactory
+
+func defaultBasebackupFactory(ctx context.Context, opts Options) basebackupRunner {
+	cmd := exec.CommandContext(ctx, "pg_basebackup",
+		buildBasebackupArgs(opts)...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+func buildBasebackupArgs(opts Options) []string {
+	args := []string{"-D", opts.DataDir, "-d", opts.PrimaryDSN, "-X", "stream", "-c", "fast", "-R", "-P"}
+	if opts.SlotName != "" {
+		args = append(args, "-S", opts.SlotName, "--create-slot")
+	}
+	return args
 }
 
 // Run performs the setup: validates the data dir is empty or absent,
@@ -40,34 +61,16 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	args := []string{
-		"-D", opts.DataDir,
-		"-d", opts.PrimaryDSN,
-		"-X", "stream",
-		"-c", "fast",
-		"-R", // write standby.signal + primary_conninfo
-		"-P",
-	}
-	if opts.SlotName != "" {
-		args = append(args, "-S", opts.SlotName, "--create-slot")
-	}
-
-	cmd := exec.CommandContext(ctx, "pg_basebackup", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
+	args := buildBasebackupArgs(opts)
 	if opts.DryRun {
-		fmt.Printf("[dry-run] %s %s\n", cmd.Path, strings.Join(args, " "))
+		fmt.Printf("[dry-run] pg_basebackup %s\n", strings.Join(args, " "))
 		return nil
 	}
 	fmt.Printf("running pg_basebackup into %s ...\n", opts.DataDir)
-	if err := cmd.Run(); err != nil {
+	if err := runBasebackup(ctx, opts).Run(); err != nil {
 		return fmt.Errorf("pg_basebackup: %w", err)
 	}
 
-	// pg_basebackup -R writes primary_conninfo to postgresql.auto.conf,
-	// but the application_name may be the default. Override it so the
-	// primary's pg_stat_replication row matches the secondary's name.
 	if err := appendConnInfoAppname(opts.DataDir, opts.SlotName); err != nil {
 		return err
 	}

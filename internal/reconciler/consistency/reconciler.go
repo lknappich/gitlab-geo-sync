@@ -24,28 +24,24 @@ import (
 
 const name = "consistency_sweep"
 
+// rowQuerier is the minimal pool surface rowCount needs.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // tablesToCount are the key GitLab tables whose row counts we compare.
-// These are all public CE schema tables observable on any install.
 var tablesToCount = []string{
-	"projects",
-	"namespaces",
-	"users",
-	"merge_requests",
-	"issues",
-	"notes",
-	"ci_builds",
-	"ci_pipelines",
-	"labels",
-	"milestones",
+	"projects", "namespaces", "users", "merge_requests",
+	"issues", "notes", "ci_builds", "ci_pipelines", "labels", "milestones",
 }
 
 // Reconciler compares row counts and samples git fsck.
 type Reconciler struct {
-	primary       *pgxpool.Pool
-	secondary     *pgxpool.Pool
+	primary       rowQuerier
+	secondary     rowQuerier
 	secondaryName string
 	reposPath     string
-	samplePct     float64 // 0.0–1.0
+	samplePct     float64
 }
 
 // New creates a consistency sweep reconciler.
@@ -57,6 +53,14 @@ func New(primary, secondary *pgxpool.Pool, secondaryName, reposPath string, samp
 		reposPath:     reposPath,
 		samplePct:     samplePct,
 	}
+}
+
+// WithPools returns a copy of r with the given rowQuerier pools (for tests).
+func (r *Reconciler) WithPools(primary, secondary rowQuerier) *Reconciler {
+	cp := *r
+	cp.primary = primary
+	cp.secondary = secondary
+	return &cp
 }
 
 func (r *Reconciler) Name() string { return name }
@@ -90,7 +94,6 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 		}
 	}
 
-	// Git fsck sample.
 	if r.reposPath != "" {
 		fsckDrifts := r.sampleGitFsck(ctx)
 		drifts += fsckDrifts
@@ -101,12 +104,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 	return result
 }
 
-// rowCount returns the approximate row count for a table. Uses
-// pg_class.reltuples (cheap, stats-based) rather than a full COUNT(*).
-// Returns (0, nil) only if the table genuinely doesn't exist (pg_class
-// has no matching row); actual query errors are returned so callers can
-// distinguish a missing table from a connection failure.
-func rowCount(ctx context.Context, pool *pgxpool.Pool, table string) (int64, error) {
+// rowCount returns the approximate row count for a table.
+func rowCount(ctx context.Context, pool rowQuerier, table string) (int64, error) {
 	var n int64
 	err := pool.QueryRow(ctx, `
 		SELECT reltuples::bigint

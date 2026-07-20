@@ -2,8 +2,10 @@ package autorepair
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,4 +56,39 @@ func TestGitRepairWithFakeRepo(t *testing.T) {
 		t.Log("git fetch succeeded unexpectedly (maybe git not installed)")
 	}
 	// Error is expected; we just verify it doesn't panic.
+}
+
+type mockAutoRunner struct {
+	out   []byte
+	err   error
+	calls int
+}
+
+func (m *mockAutoRunner) Run(ctx context.Context, name string, args, env []string) ([]byte, error) {
+	m.calls++
+	return m.out, m.err
+}
+
+func TestGitRepairSuccess(t *testing.T) {
+	runner := &mockAutoRunner{out: []byte("")}
+	g := NewGitRepair("p:22", "/repos", false).WithRunner(runner)
+	err := g.RepairRepo(context.Background(), "group/proj.git")
+	if err != nil {
+		t.Fatalf("RepairRepo: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Errorf("calls = %d, want 1", runner.calls)
+	}
+}
+
+func TestGitRepairFailure(t *testing.T) {
+	runner := &mockAutoRunner{err: errors.New("fetch failed"), out: []byte("error output")}
+	g := NewGitRepair("p:22", "/repos", false).WithRunner(runner)
+	err := g.RepairRepo(context.Background(), "group/proj.git")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "fetch failed") {
+		t.Errorf("err = %v", err)
+	}
 }
