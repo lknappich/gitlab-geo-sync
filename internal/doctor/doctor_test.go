@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 func TestResultSummary(t *testing.T) {
@@ -80,4 +81,80 @@ func TestPrintOutput(t *testing.T) {
 		Pass: 1,
 	}
 	r.Print()
+}
+
+func TestSSHCheckEmptyHost(t *testing.T) {
+	c := sshCheck(context.Background(), "primary", "", sshexec.Config{})
+	if c.Status != "WARN" {
+		t.Errorf("Status = %q, want WARN", c.Status)
+	}
+	if !strings.Contains(c.Detail, "ssh_host not configured") {
+		t.Errorf("Detail = %q", c.Detail)
+	}
+}
+
+func TestPGControlCheckEmptyHost(t *testing.T) {
+	c := pgControlCheck(context.Background(), "primary", config.PostgresConfig{})
+	if c.Status != "FAIL" {
+		t.Errorf("Status = %q, want FAIL", c.Status)
+	}
+	if !strings.Contains(c.Detail, "not configured") {
+		t.Errorf("Detail = %q", c.Detail)
+	}
+}
+
+func TestRemoteBinaryCheckEmptyHost(t *testing.T) {
+	c := remoteBinaryCheck(context.Background(), "primary", "rsync", "", "rsync --version", sshexec.Config{})
+	if c.Status != "WARN" {
+		t.Errorf("Status = %q, want WARN", c.Status)
+	}
+	if c.Name != "rsync:primary" {
+		t.Errorf("Name = %q", c.Name)
+	}
+}
+
+func TestPathExistsCheckEmptyHost(t *testing.T) {
+	c := pathExistsCheck(context.Background(), "primary", "", "/some/path", "repos", sshexec.Config{})
+	if c.Status != "WARN" {
+		t.Errorf("Status = %q, want WARN", c.Status)
+	}
+}
+
+func TestS3BucketCheckEmptyPrimaryBucket(t *testing.T) {
+	c := s3BucketCheck(context.Background(), "primary", &config.S3Config{
+		PrimaryBucket: "",
+	})
+	if c.Status != "FAIL" {
+		t.Errorf("Status = %q, want FAIL", c.Status)
+	}
+	if !strings.Contains(c.Detail, "primary_bucket") {
+		t.Errorf("Detail = %q", c.Detail)
+	}
+}
+
+func TestS3BucketCheckEmptyReplicaBucket(t *testing.T) {
+	c := s3BucketCheck(context.Background(), "primary", &config.S3Config{
+		PrimaryBucket: "p",
+		ReplicaBucket: "",
+	})
+	if c.Status != "FAIL" {
+		t.Errorf("Status = %q, want FAIL", c.Status)
+	}
+	if !strings.Contains(c.Detail, "replica_bucket") {
+		t.Errorf("Detail = %q", c.Detail)
+	}
+}
+
+func TestResultAddAndSummary(t *testing.T) {
+	r := &Result{}
+	r.add(Check{Name: "a", Status: "PASS"})
+	r.add(Check{Name: "b", Status: "FAIL"})
+	r.add(Check{Name: "c", Status: "WARN"})
+	r.add(Check{Name: "d", Status: "PASS"})
+	if r.Pass != 0 || r.Fail != 0 || r.Warn != 0 {
+		t.Error("summary fields should be 0 before recount")
+	}
+	if len(r.Checks) != 4 {
+		t.Errorf("len(Checks) = %d, want 4", len(r.Checks))
+	}
 }

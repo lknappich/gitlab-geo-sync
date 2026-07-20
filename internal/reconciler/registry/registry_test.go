@@ -2,6 +2,8 @@ package registry
 
 import (
 	"testing"
+
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
 )
 
 func TestToSet(t *testing.T) {
@@ -42,5 +44,45 @@ func TestEqualSet(t *testing.T) {
 	d := toSet([]string{"a", "c"})
 	if equalSet(a, d) {
 		t.Error("equalSet should be false for different keys")
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	if isAuthError(nil) {
+		t.Error("nil should not be auth error")
+	}
+	if !isAuthError(errAuthRequired) {
+		t.Error("errAuthRequired should be auth error")
+	}
+	if isAuthError(errAuthRequiredAlternate) {
+		t.Error("different error should not be auth error")
+	}
+}
+
+var errAuthRequiredAlternate = errStringOther("some other error")
+
+type errStringOther string
+
+func (e errStringOther) Error() string { return string(e) }
+
+func TestNewURLConstruction(t *testing.T) {
+	primary := &config.SiteConfig{ExternalURL: "https://gitlab.primary.example.com/"}
+	secondary := &config.SiteConfig{ExternalURL: "https://gitlab.secondary.example.com"}
+	r := New(primary, secondary, true)
+	if r.primaryURL != "https://gitlab.primary.example.com/v2" {
+		t.Errorf("primaryURL = %q", r.primaryURL)
+	}
+	if r.secondaryURL != "https://gitlab.secondary.example.com/v2" {
+		t.Errorf("secondaryURL = %q", r.secondaryURL)
+	}
+	if !r.dryRun {
+		t.Error("dryRun should be true")
+	}
+}
+
+func TestName(t *testing.T) {
+	r := &Reconciler{}
+	if r.Name() != "registry" {
+		t.Errorf("Name() = %q, want registry", r.Name())
 	}
 }

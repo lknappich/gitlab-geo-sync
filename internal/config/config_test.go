@@ -403,3 +403,112 @@ func parseDSNPassword(t *testing.T, dsn string) string {
 	}
 	return sb.String()
 }
+
+func TestExpandEnvReplacesAllRefs(t *testing.T) {
+	t.Setenv("FOO", "bar")
+	t.Setenv("BAZ", "qux")
+	in := []byte("key: ${FOO}\nother: ${BAZ}")
+	out, err := ExpandEnv(in)
+	if err != nil {
+		t.Fatalf("ExpandEnv: %v", err)
+	}
+	want := "key: bar\nother: qux"
+	if string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}
+
+func TestExpandEnvMissingVar(t *testing.T) {
+	os.Unsetenv("DEFINITELY_UNSET_VAR_XYZ")
+	in := []byte("key: ${DEFINITELY_UNSET_VAR_XYZ}")
+	_, err := ExpandEnv(in)
+	if err == nil {
+		t.Fatal("expected error for missing env var")
+	}
+	if !strings.Contains(err.Error(), "DEFINITELY_UNSET_VAR_XYZ") {
+		t.Errorf("error should name the missing var: %v", err)
+	}
+}
+
+func TestExpandEnvEmptyVarIsMissing(t *testing.T) {
+	t.Setenv("EMPTY_VAR", "")
+	in := []byte("key: ${EMPTY_VAR}")
+	_, err := ExpandEnv(in)
+	if err == nil {
+		t.Fatal("empty env var should be treated as missing")
+	}
+}
+
+func TestExpandEnvNoRefs(t *testing.T) {
+	in := []byte("key: plain-value\n")
+	out, err := ExpandEnv(in)
+	if err != nil {
+		t.Fatalf("ExpandEnv: %v", err)
+	}
+	if string(out) != string(in) {
+		t.Errorf("got %q, want %q", out, in)
+	}
+}
+
+func TestInstanceIDIsUnique(t *testing.T) {
+	c := &Config{}
+	a := c.InstanceID()
+	b := c.InstanceID()
+	if a == "" || b == "" {
+		t.Fatal("InstanceID should not be empty")
+	}
+	if a == b {
+		t.Fatal("InstanceID should be unique per call")
+	}
+}
+
+func TestSSHExecConfig(t *testing.T) {
+	c := &Config{SSH: SSHConfig{KnownHostsFile: "/etc/ssh/known_hosts", StrictHostKeyChecking: "yes"}}
+	got := c.SSHExecConfig()
+	if got.KnownHostsFile != "/etc/ssh/known_hosts" {
+		t.Errorf("KnownHostsFile = %q", got.KnownHostsFile)
+	}
+	if got.StrictHostKeyChecking != "yes" {
+		t.Errorf("StrictHostKeyChecking = %q", got.StrictHostKeyChecking)
+	}
+}
+
+func TestSSHExecConfigDefaults(t *testing.T) {
+	c := &Config{}
+	got := c.SSHExecConfig()
+	if got.KnownHostsFile != "" {
+		t.Errorf("KnownHostsFile = %q, want empty", got.KnownHostsFile)
+	}
+	if got.StrictHostKeyChecking != "" {
+		t.Errorf("StrictHostKeyChecking = %q, want empty", got.StrictHostKeyChecking)
+	}
+}
+
+func TestResolveEnvRejectsMissing(t *testing.T) {
+	os.Unsetenv("MISSING_PG_PWD")
+	c := &Config{Primary: SiteConfig{Postgres: PostgresConfig{Password: "${MISSING_PG_PWD}"}}}
+	err := resolveEnvInStruct(c)
+	if err == nil {
+		t.Fatal("expected error for missing env var")
+	}
+}
+
+func TestResolveEnvHandlesNilPointers(t *testing.T) {
+	c := &Config{Failover: nil}
+	err := resolveEnvInStruct(c)
+	if err != nil {
+		t.Fatalf("resolveEnvInStruct with nil pointer: %v", err)
+	}
+}
+
+func TestResolveEnvExpandsSlice(t *testing.T) {
+	t.Setenv("FIRST_SEC", "s1")
+	c := &Config{Secondaries: []SiteConfig{{Name: "${FIRST_SEC}"}}}
+	err := resolveEnvInStruct(c)
+	if err != nil {
+		t.Fatalf("resolveEnvInStruct slice: %v", err)
+	}
+	if c.Secondaries[0].Name != "s1" {
+		t.Errorf("Name = %q, want s1", c.Secondaries[0].Name)
+	}
+}
