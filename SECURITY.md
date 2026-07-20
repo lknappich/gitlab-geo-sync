@@ -7,7 +7,11 @@ backported to the current release branch only.
 
 ## Reporting a vulnerability
 
-Report security vulnerabilities privately by emailing the maintainer.
+Report security vulnerabilities privately via GitHub's built-in
+private vulnerability reporting:
+
+  https://github.com/lknappich/gitlab-geo-sync/security/advisories/new
+
 Do not open a public issue. Include:
 - A description of the vulnerability and its impact
 - Steps to reproduce (proof of concept if possible)
