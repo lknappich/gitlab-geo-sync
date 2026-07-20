@@ -19,7 +19,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 // Config is the root configuration object.

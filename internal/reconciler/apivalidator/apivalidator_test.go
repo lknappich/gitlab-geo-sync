@@ -3,7 +3,7 @@ package apivalidator
 import (
 	"testing"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
 )
 
 func TestNewBuildsURLs(t *testing.T) {

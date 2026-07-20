@@ -12,9 +12,9 @@ builds:
     binary: geoctl
     ldflags:
       - -s -w
-      - -X github.com/anomalyco/gitlab-geo-sync/internal/version.Version={{.Version}}
-      - -X github.com/anomalyco/gitlab-geo-sync/internal/version.Commit={{.ShortCommit}}
-      - -X github.com/anomalyco/gitlab-geo-sync/internal/version.BuildDate={{.Date}}
+      - -X github.com/lknappich/gitlab-geo-sync/internal/version.Version={{.Version}}
+      - -X github.com/lknappich/gitlab-geo-sync/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/lknappich/gitlab-geo-sync/internal/version.BuildDate={{.Date}}
     env:
       - CGO_ENABLED=0
     goos:
@@ -39,8 +39,8 @@ dockers:
     goarch: amd64
     ids: [geoctl]
     image_templates:
-      - "ghcr.io/anomalyco/gitlab-geo-sync:{{ .Version }}"
-      - "ghcr.io/anomalyco/gitlab-geo-sync:latest"
+      - "ghcr.io/lknappich/gitlab-geo-sync:{{ .Version }}"
+      - "ghcr.io/lknappich/gitlab-geo-sync:latest"
     dockerfile: Dockerfile
     use: buildx
 
@@ -56,7 +56,7 @@ changelog:
 
 release:
   github:
-    owner: anomalyco
+    owner: lknappich
     name: gitlab-geo-sync
   draft: true
   prerelease: auto

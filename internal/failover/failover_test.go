@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
 )
 
 func TestNewControllerDefaults(t *testing.T) {

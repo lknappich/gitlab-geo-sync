@@ -1,4 +1,4 @@
-module github.com/anomalyco/gitlab-geo-sync
+module github.com/lknappich/gitlab-geo-sync
 
 go 1.25
 

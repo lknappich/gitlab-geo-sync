@@ -13,9 +13,9 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
-	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
-	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
+	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
 )
 
 const name = "object_storage"

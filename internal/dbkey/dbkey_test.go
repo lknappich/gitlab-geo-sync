@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 func TestDbKeyRegexMatchesQuoted(t *testing.T) {

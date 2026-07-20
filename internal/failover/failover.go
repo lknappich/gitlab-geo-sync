@@ -11,10 +11,10 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
-	"github.com/anomalyco/gitlab-geo-sync/internal/dbkey"
-	"github.com/anomalyco/gitlab-geo-sync/internal/readonly"
-	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/dbkey"
+	"github.com/lknappich/gitlab-geo-sync/internal/readonly"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 // Controller monitors primary health and orchestrates failover.

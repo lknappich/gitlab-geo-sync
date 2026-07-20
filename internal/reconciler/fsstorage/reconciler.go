@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
-	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
-	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
-	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
+	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 const name = "fs_storage"

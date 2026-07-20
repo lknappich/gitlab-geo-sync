@@ -17,8 +17,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
-	"github.com/anomalyco/gitlab-geo-sync/internal/projectpath"
+	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
+	"github.com/lknappich/gitlab-geo-sync/internal/projectpath"
 )
 
 // Server receives GitLab webhooks and triggers immediate sync.

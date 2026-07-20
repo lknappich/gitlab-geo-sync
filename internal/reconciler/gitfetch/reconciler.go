@@ -22,10 +22,10 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
-	"github.com/anomalyco/gitlab-geo-sync/internal/projectpath"
-	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
-	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
+	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
+	"github.com/lknappich/gitlab-geo-sync/internal/projectpath"
+	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 const name = "git_fetch"

@@ -18,8 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/metrics"
-	"github.com/anomalyco/gitlab-geo-sync/internal/reconciler"
+	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
+	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
 )
 
 const name = "consistency_sweep"

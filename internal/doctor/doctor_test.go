@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
 )
 
 func TestResultSummary(t *testing.T) {

@@ -3,8 +3,8 @@ package fsstorage
 import (
 	"testing"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
-	"github.com/anomalyco/gitlab-geo-sync/internal/sshexec"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
 
 func TestNewCollectsFSPaths(t *testing.T) {

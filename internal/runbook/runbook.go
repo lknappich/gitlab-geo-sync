@@ -8,7 +8,7 @@ import (
 	"io"
 	"text/template"
 
-	"github.com/anomalyco/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/config"
 )
 
 // Generate writes a Markdown runbook to w based on cfg.
