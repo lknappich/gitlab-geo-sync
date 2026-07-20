@@ -199,7 +199,7 @@ func repoDiskPath(_ string, hashed bool, routePath string, projectID int32) stri
 // encoded as a string, matching GitLab's hashed-storage digest.
 func sha1Hex(projectID int32) string {
 	h := sha1.New()
-	fmt.Fprintf(h, "%d", projectID)
+	_, _ = fmt.Fprintf(h, "%d", projectID)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

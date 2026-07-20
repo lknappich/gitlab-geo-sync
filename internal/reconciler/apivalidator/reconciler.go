@@ -104,7 +104,7 @@ func (r *Reconciler) fetchCount(ctx context.Context, baseURL, token, path string
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))

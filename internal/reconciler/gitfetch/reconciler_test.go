@@ -24,7 +24,7 @@ func TestRepoDiskPathLegacyEmptyRoute(t *testing.T) {
 
 func TestRepoDiskPathHashed(t *testing.T) {
 	h := sha1.New()
-	fmt.Fprintf(h, "%d", 42)
+	_, _ = fmt.Fprintf(h, "%d", 42)
 	full := hex.EncodeToString(h.Sum(nil))
 	got := repoDiskPath("default", true, "ignored", 42)
 	want := fmt.Sprintf("@hashed/%s/%s.git", full[:2], full)
