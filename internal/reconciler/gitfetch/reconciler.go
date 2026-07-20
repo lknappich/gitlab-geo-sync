@@ -12,16 +12,17 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/lknappich/gitlab-geo-sync/internal/localcmd"
 	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
 	"github.com/lknappich/gitlab-geo-sync/internal/projectpath"
 	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
@@ -30,15 +31,21 @@ import (
 
 const name = "git_fetch"
 
+// projectQuerier is the minimal pool surface listProjects needs.
+type projectQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // Reconciler fetches all project repos from the primary's Gitaly via SSH.
 type Reconciler struct {
 	primarySSHHost string
 	reposPath      string
 	secondaryName  string
-	primaryPool    *pgxpool.Pool
+	primaryPool    projectQuerier
 	sshCfg         sshexec.Config
 	dryRun         bool
 	maxParallel    int
+	runner         localcmd.Runner
 }
 
 // New creates a git fetch reconciler.
@@ -51,7 +58,22 @@ func New(primarySSHHost, reposPath, secondaryName string, primaryPool *pgxpool.P
 		sshCfg:         sshCfg,
 		dryRun:         dryRun,
 		maxParallel:    8,
+		runner:         localcmd.Default,
 	}
+}
+
+// WithRunner returns a copy of r with the given localcmd.Runner.
+func (r *Reconciler) WithRunner(runner localcmd.Runner) *Reconciler {
+	cp := *r
+	cp.runner = runner
+	return &cp
+}
+
+// WithPool returns a copy of r with the given projectQuerier (for tests).
+func (r *Reconciler) WithPool(pool projectQuerier) *Reconciler {
+	cp := *r
+	cp.primaryPool = pool
+	return &cp
 }
 
 func (r *Reconciler) Name() string { return name }
@@ -230,9 +252,8 @@ func (r *Reconciler) fetchOne(ctx context.Context, p projectRow) bool {
 
 	projectTimeout, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(projectTimeout, "git", args...)
-	cmd.Env = append(cmd.Environ(), "GIT_SSH_COMMAND="+r.sshCfg.SSHString())
-	out, err := cmd.CombinedOutput()
+	out, err := localcmd.RunWith(projectTimeout, r.runner, "git", args,
+		[]string{"GIT_SSH_COMMAND=" + r.sshCfg.SSHString()})
 	if err != nil {
 		log.Warn().Err(err).Int32("project_id", p.ID).
 			Str("repo", p.RepoPath).

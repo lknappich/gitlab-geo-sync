@@ -7,11 +7,11 @@ package gitrsync
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/localcmd"
 	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
 	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
 	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
@@ -21,11 +21,12 @@ const name = "git_rsync"
 
 // Reconciler rsyncs the primary git-data tree to the secondary.
 type Reconciler struct {
-	sshHost string // primary host:port
-	srcPath string // primary repos path
-	dstPath string // secondary repos path
+	sshHost string
+	srcPath string
+	dstPath string
 	sshCfg  sshexec.Config
 	dryRun  bool
+	runner  localcmd.Runner
 }
 
 // New creates a git rsync reconciler from a primary/secondary config pair.
@@ -36,7 +37,17 @@ func New(primary, secondary *config.SiteConfig, dryRun bool, sshCfg sshexec.Conf
 		dstPath: secondary.Git.ReposPath,
 		sshCfg:  sshCfg,
 		dryRun:  dryRun,
+		runner:  localcmd.Default,
 	}
+}
+
+// WithRunner returns a copy of r with the given localcmd.Runner.
+// Used by tests to inject a mock; production callers leave r.runner as
+// localcmd.Default.
+func (r *Reconciler) WithRunner(runner localcmd.Runner) *Reconciler {
+	cp := *r
+	cp.runner = runner
+	return &cp
 }
 
 func (r *Reconciler) Name() string { return name }
@@ -61,8 +72,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) reconciler.Result {
 		r.dstPath+"/",
 	)
 
-	cmd := exec.CommandContext(ctx, "rsync", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := localcmd.RunWith(ctx, r.runner, "rsync", args, nil)
 	elapsed := time.Since(start)
 	metrics.SyncDurationSeconds.WithLabelValues(name, errResult(err)).Observe(elapsed.Seconds())
 	if err != nil {

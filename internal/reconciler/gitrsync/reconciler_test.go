@@ -1,11 +1,52 @@
 package gitrsync
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/localcmd"
 	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
 )
+
+// mockRunner records calls and returns canned output.
+type mockRunner struct {
+	out    []byte
+	err    error
+	calls  []mockCall
+	perCmd map[string][]byte
+	perErr map[string]error
+}
+
+type mockCall struct {
+	name string
+	args []string
+	env  []string
+}
+
+func (m *mockRunner) Run(ctx context.Context, name string, args, env []string) ([]byte, error) {
+	m.calls = append(m.calls, mockCall{name, args, env})
+	if m.perErr != nil {
+		if err, ok := m.perErr[name]; ok {
+			if m.perCmd != nil {
+				if out, ok := m.perCmd[name]; ok {
+					return out, err
+				}
+			}
+			return m.out, err
+		}
+	}
+	if m.perCmd != nil {
+		if out, ok := m.perCmd[name]; ok {
+			return out, m.err
+		}
+	}
+	return m.out, m.err
+}
+
+var _ localcmd.Runner = (*mockRunner)(nil)
 
 func TestNewConstructorFields(t *testing.T) {
 	primary := &config.SiteConfig{
@@ -67,14 +108,69 @@ func TestErrResultOK(t *testing.T) {
 }
 
 func TestErrResultError(t *testing.T) {
-	got := errResult(errOops)
+	got := errResult(errors.New("oops"))
 	if got != "error" {
 		t.Errorf("errResult(err) = %q, want error", got)
 	}
 }
 
-var errOops = errString("oops")
+func TestReconcileSuccess(t *testing.T) {
+	r := New(&config.SiteConfig{SSHHost: "p:22", Git: config.GitStorage{ReposPath: "/src"}},
+		&config.SiteConfig{Git: config.GitStorage{ReposPath: "/dst"}}, false, sshexec.Config{})
+	r = r.WithRunner(&mockRunner{out: []byte("")})
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK, got: %s", res.Detail)
+	}
+}
 
-type errString string
+func TestReconcileDryRun(t *testing.T) {
+	r := New(&config.SiteConfig{SSHHost: "p:22", Git: config.GitStorage{ReposPath: "/src"}},
+		&config.SiteConfig{Git: config.GitStorage{ReposPath: "/dst"}}, true, sshexec.Config{})
+	r = r.WithRunner(&mockRunner{out: []byte("")})
+	res := r.Reconcile(context.Background())
+	if !res.OK {
+		t.Errorf("expected OK, got: %s", res.Detail)
+	}
+	if !strings.Contains(res.Detail, "dry-run") {
+		t.Errorf("Detail should mention dry-run: %s", res.Detail)
+	}
+}
 
-func (e errString) Error() string { return string(e) }
+func TestReconcileRsyncError(t *testing.T) {
+	r := New(&config.SiteConfig{SSHHost: "p:22", Git: config.GitStorage{ReposPath: "/src"}},
+		&config.SiteConfig{Git: config.GitStorage{ReposPath: "/dst"}}, false, sshexec.Config{})
+	r = r.WithRunner(&mockRunner{err: errors.New("rsync failed"), out: []byte("permission denied")})
+	res := r.Reconcile(context.Background())
+	if res.OK {
+		t.Error("expected not-OK on rsync error")
+	}
+	if !strings.Contains(res.Detail, "permission denied") {
+		t.Errorf("Detail = %q", res.Detail)
+	}
+}
+
+func TestReconcileBuildsCorrectArgs(t *testing.T) {
+	runner := &mockRunner{out: []byte("")}
+	r := New(&config.SiteConfig{SSHHost: "p:22", Git: config.GitStorage{ReposPath: "/src"}},
+		&config.SiteConfig{Git: config.GitStorage{ReposPath: "/dst"}}, false, sshexec.Config{})
+	r = r.WithRunner(runner)
+	_ = r.Reconcile(context.Background())
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.name != "rsync" {
+		t.Errorf("name = %q, want rsync", call.name)
+	}
+	joined := strings.Join(call.args, " ")
+	if !strings.Contains(joined, "--delete") {
+		t.Errorf("args should include --delete: %s", joined)
+	}
+	if !strings.Contains(joined, "p:22:/src/") {
+		t.Errorf("args should include source: %s", joined)
+	}
+	if !strings.Contains(joined, "/dst/") {
+		t.Errorf("args should include dest: %s", joined)
+	}
+}

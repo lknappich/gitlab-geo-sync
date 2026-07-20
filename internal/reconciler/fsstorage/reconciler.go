@@ -6,11 +6,11 @@ package fsstorage
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/lknappich/gitlab-geo-sync/internal/config"
+	"github.com/lknappich/gitlab-geo-sync/internal/localcmd"
 	"github.com/lknappich/gitlab-geo-sync/internal/metrics"
 	"github.com/lknappich/gitlab-geo-sync/internal/reconciler"
 	"github.com/lknappich/gitlab-geo-sync/internal/sshexec"
@@ -24,23 +24,23 @@ type Reconciler struct {
 	sshCfg    sshexec.Config
 	pathPairs []PathPair
 	dryRun    bool
+	runner    localcmd.Runner
 }
 
 // PathPair describes a source path on the primary and its corresponding
 // destination on the secondary.
 type PathPair struct {
-	Src string // e.g. /var/opt/gitlab/git-data/uploads
-	Dst string // e.g. /var/opt/gitlab/git-data/uploads
+	Src string
+	Dst string
 }
 
 // New creates an FS storage reconciler from the primary/secondary configs.
-// It collects all relevant path pairs from object_storage.fs_paths and
-// registry.fs_path.
 func New(primary, secondary *config.SiteConfig, dryRun bool, sshCfg sshexec.Config) *Reconciler {
 	r := &Reconciler{
 		sshHost: primary.SSHHost,
 		sshCfg:  sshCfg,
 		dryRun:  dryRun,
+		runner:  localcmd.Default,
 	}
 
 	for _, p := range primary.ObjectStore.FSPaths {
@@ -60,6 +60,16 @@ func New(primary, secondary *config.SiteConfig, dryRun bool, sshCfg sshexec.Conf
 
 	return r
 }
+
+// WithRunner returns a copy of r with the given localcmd.Runner.
+func (r *Reconciler) WithRunner(runner localcmd.Runner) *Reconciler {
+	cp := *r
+	cp.runner = runner
+	return &cp
+}
+
+// PathPairs returns the configured path pairs (for test inspection).
+func (r *Reconciler) PathPairs() []PathPair { return r.pathPairs }
 
 func (r *Reconciler) Name() string { return name }
 
@@ -124,12 +134,9 @@ func (r *Reconciler) rsyncPath(ctx context.Context, pair PathPair) error {
 		pair.Dst+"/",
 	)
 
-	cmd := exec.CommandContext(ctx, "rsync", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := localcmd.RunWith(ctx, r.runner, "rsync", args, nil)
 	if err != nil {
 		errStr := strings.TrimSpace(string(out))
-		// If the source path doesn't exist on the primary, skip it
-		// (fresh install may not have uploads/artifacts/etc. yet).
 		if strings.Contains(errStr, "No such file or directory") ||
 			strings.Contains(errStr, "change_dir") {
 			return nil
